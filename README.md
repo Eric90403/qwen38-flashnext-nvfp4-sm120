@@ -220,7 +220,7 @@ benchmarks/bench-results.json               raw output of the 2026-09-25 run beh
 
 ## Credits
 
-- **Eric ([@Eric90403](https://github.com/Eric90403)) — host, development instigator** — bought the cards, kept the
+- **Eric ([@Eric90403](https://github.com/Eric90403)) — Meatbag using Hermes** — kept the
   power on through the multi-day deadlock hunt, set the bar ("it must fit
   512K or it doesn't ship").
 - **Hermes Agent (Nous Research)** — authored this recipe: the flag-by-flag
