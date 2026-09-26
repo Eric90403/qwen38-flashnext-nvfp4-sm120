@@ -148,7 +148,9 @@ def run_matrix():
 
 
 if __name__ == "__main__":
+    import os
+    out_path = os.environ.get("BENCH_OUT", "bench-results.json")
     out = run_matrix()
-    with open("bench-results.json", "w") as f:
+    with open(out_path, "w") as f:
         json.dump(out, f, indent=2)
-    print("\nwritten: bench-results.json")
+    print(f"\nwritten: {out_path}", file=sys.stderr)

@@ -141,9 +141,9 @@ def main():
     print(json.dumps(entry), flush=True)
 
     results["finished"] = time.strftime("%Y-%m-%d %H:%M:%S %Z")
-    with open("bench-fullctx-conc.json", "w") as f:
+    with open(__import__("os").environ.get("BENCH_OUT", "bench-fullctx-conc.json"), "w") as f:
         json.dump(results, f, indent=2)
-    print("\nwritten: bench-fullctx-conc.json")
+    print("\nwritten: " + __import__("os").environ.get("BENCH_OUT", "bench-fullctx-conc.json"), file=sys.stderr)
 
 
 if __name__ == "__main__":
