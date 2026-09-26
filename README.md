@@ -149,9 +149,10 @@ bind-mounted patch files, and `-e VLLM_SKIP_WARMUP_KERNELS=1`.)
 `MTP=1` appends `--speculative-config '{"method":"mtp","num_speculative_tokens":3}'`.
 It boots clean on the pinned Sep-26 nightly: the block-FP8 ModelOpt loading
 fix (#55513, merged 2026-09-08) makes the `Qwen4ExpMTP` architecture resolve
-and load against this checkpoint. Measured single-stream decode (3-pass
-median, temp 0.7): prose 131–134 tok/s (1K/32K/128K/500K), code 133–147
-tok/s, vs 90.9–93.7 with `MTP=0`; a 3-request acceptance probe measured
+and load against this checkpoint. Measured single-stream decode (one pass
+per cell, temp 0.7): prose 109–134 tok/s across 1K–500K (declining with
+context), code 133–147 tok/s, vs 90.9–93.7 with `MTP=0`; a 3-request
+acceptance probe measured
 draft acceptance 41.8% (668 accepted of 1,599 drafted over 533 drafts).
 The cost: the MTP head plus speculator graph capture shrink the KV pool
 2,112,392 → 1,739,614 tokens, so full-context concurrency drops 4.03× →
@@ -186,7 +187,7 @@ full-context lookups → MTP=0. Raw data:
 ## Measured performance
 
 **Native build — nightly `gddd6fbca1` (2026-09-26, zero patches).** Single
-pass per cell (MTP=1 cells: 3-pass median, `runs-native-mtp-2026-09-26.json`); treat as ±3% of a 3-pass median. Raw files:
+pass per cell, MTP=1 column included (`runs-native-mtp-2026-09-26.json`, one pass per cell); treat as ±3% of a 3-pass median. Raw files:
 `benchmarks/runs-native-ple-2026-09-26.json`,
 `benchmarks/runs-fullctx-native-2026-09-26.json`. Decode at the same
 protocol (prose task, `MTP=0` unless noted):
@@ -201,8 +202,8 @@ protocol (prose task, `MTP=0` unless noted):
 
 The native offload path (#54371 + #56926 serialized huge-page host tables)
 decodes ~15% faster than the patched build at every context length, and
-single-stream MTP lifts decode ~40–60% over MTP=0 (2026-09-26 3-pass sweep:
-131–150 tok/s; see the MTP note above for the KV-pool cost). Code lane,
+single-stream MTP lifts decode +23–58% over MTP=0 depending on context
+(2026-09-26 sweep: 110–147 tok/s; see the MTP note above for the KV-pool cost). Code lane,
 MTP=0: 93.3 / 92.2 / 91.0–93.7
 (1K/32K/128K, the 128K a 3-pass retest median of 91.6). Concurrency (MTP=0): c=3 140.3 and c=4 141.5 aggregate —
 in line with the legacy medians (123.9/143.8, `bench-median.json`; the single-run reference measured 125.8/145.6, `bench-results.json`); the c=2 pass measured 79.8 due

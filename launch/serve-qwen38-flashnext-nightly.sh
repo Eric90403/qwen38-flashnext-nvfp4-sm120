@@ -76,9 +76,10 @@ fi
 #   * gdn_prefill_backend left auto -> FlashInfer prefill (AOT cubins,
 #     head_k_dim=128 satisfied by this checkpoint).
 #   * KV is BF16 (nightly QSA allowlist: auto|bfloat16 — no FP8 KV).
-#   * MTP: validated on the native Sep-26 nightly (README: 3-pass prose+code
-#     sweep 2026-09-26, acceptance 42% of drafted tokens; multi-stream numbers
-#     in runs-conc3-mtp-2026-09-26.json). NOT validated on the legacy Sep-5
+#   * MTP: validated on the native Sep-26 nightly (README: single-pass
+#     prose+code sweep 2026-09-26, acceptance 41.8% of drafted tokens over a
+#     3-request probe; multi-stream numbers in runs-conc3-mtp-2026-09-26.json).
+#     NOT validated on the legacy Sep-5
 #     pinned build (image 2026-09-05,
 #     commit e962733). Upstream has moved since the pin — #55513 (block
 #     FP8 MTP fix for ModelOpt checkpoints) merged 2026-09-08, and the
