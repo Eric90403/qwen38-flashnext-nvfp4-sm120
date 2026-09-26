@@ -245,6 +245,8 @@ tokens / (total − TTFT).
 **Natural-text lane (real English corpus — Gutenberg prose, not synthetic
 pseudo-words — because this model's PLE/n-gram embedding system could in
 principle treat real text differently; it doesn't):**
+(chat endpoint, 512-token outputs — unlike the `/v1/completions`
+sweeps above; see `benchmarks/bench-natural.json` `endpoint` field.)
 
 | Prompt size | TTFT | Prefill tok/s | Decode tok/s |
 |---|---|---|---|
