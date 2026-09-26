@@ -65,7 +65,8 @@ for the pool.
 | Serving (legacy, `NATIVE=0`) | vLLM `0.28.1rc1.dev437+ge962733e0` (upstream commit [`e962733`](https://github.com/vllm-project/vllm/commit/e962733e0), image digest `sha256:89dd8f44…`, image built 2026-09-05) + the two `patches/` files. Validated 2026-09-22, end-to-end. |
 
 Requirements that are hard: **≥ ~100 GB host RAM** (each rank pins a 23.8 GiB
-table copy — see the `uva.py` patch) and **two 72 GB Blackwell cards**. A
+table copy in both modes; the legacy `uva.py` patch additionally avoids a
+pageable+pin double-copy of ~51 GB/worker at load) and **two 72 GB Blackwell cards**. A
 single card cannot hold the TP2 shards; this is not a TP1 recipe.
 
 ## Quick start
