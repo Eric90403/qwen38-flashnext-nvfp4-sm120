@@ -1,0 +1,5 @@
+{"ctx_requested": 32000, "prompt_tokens": 34267, "completion_tokens": 512, "finish_reason": "length", "ttft_s": 3.25, "total_s": 9.65, "prefill_tok_s": 10536.0, "decode_tok_s": 80.1, "test": "natural-text ctx~32000", "est_prompt_tokens": 32037}
+{"ctx_requested": 128000, "prompt_tokens": 135926, "completion_tokens": 512, "finish_reason": "length", "ttft_s": 13.05, "total_s": 19.47, "prefill_tok_s": 10412.0, "decode_tok_s": 79.8, "test": "natural-text ctx~128000", "est_prompt_tokens": 128022}
+{"ctx_requested": 480000, "prompt_tokens": 510798, "completion_tokens": 512, "finish_reason": "length", "ttft_s": 56.37, "total_s": 62.92, "prefill_tok_s": 9062.0, "decode_tok_s": 78.2, "test": "natural-text ctx~480000", "est_prompt_tokens": 480336}
+
+written: bench-natural.json

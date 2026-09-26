@@ -98,10 +98,18 @@ def one_request(ctx_tokens: int, task: str, max_tokens: int, seed: int) -> dict:
 
 
 def run_matrix():
-    results = {"started": time.strftime("%Y-%m-%d %H:%M:%S %Z"), "endpoint": BASE, "tests": []}
+    # RUN_BASE makes every invocation use fresh seeds: re-running the suite
+    # must NOT replay identical prompts into vLLM's automatic prefix cache
+    # (that silently zeroes TTFT and fakes prefill throughput — the exact
+    # trap the debugging section documents). Original 2026-09-25 single-run
+    # results used fixed seeds 1001-1009; keep those numbers as the
+    # published single-run reference, but never re-measure with them.
+    RUN_BASE = random.randrange(10**9)
+    results = {"started": time.strftime("%Y-%m-%d %H:%M:%S %Z"),
+               "endpoint": BASE, "run_base": RUN_BASE, "tests": []}
 
     # 1) Context sweep: TTFT/prefill + prose decode at increasing context.
-    seed = 1000
+    seed = RUN_BASE
     for ctx in (1000, 8000, 32000, 128000, 500000):
         seed += 1
         r = one_request(ctx, PROSE_TASK, 400, seed)

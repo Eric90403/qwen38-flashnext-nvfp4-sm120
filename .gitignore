@@ -1,0 +1,9 @@
+# Python
+__pycache__/
+*.pyc
+# OS
+.DS_Store
+# Local eval/bench artifacts (fetch scripts provide reproducibility)
+evalplus_results/
+benchmarks/corpus/corpus.txt
+*.tmp

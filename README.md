@@ -135,32 +135,42 @@ original "needs #55313/#55513" note in earlier revisions was wrong —
 #55313 does not exist.) Revalidate on a bumped image before enabling;
 the launcher keeps the `MTP=1` switch for that day.
 
-## Measured performance (2026-09-25, fresh prompts — no prefix-cache reuse)
+## Measured performance (2026-09-25; headline cells are **median of 3 passes**, range in `benchmarks/bench-median.json`)
 
 Method: `/v1/completions`, temperature 0.7, streamed; filler context is
-random pseudo-words with a **per-request seed** (defeats vLLM's automatic
-prefix caching — identical filler across tests silently reuses KV and
-inflates prefill numbers); TTFT = time to first streamed token. Decode
-rate = completion tokens / (total − TTFT). Full harness in
-`benchmarks/bench.py`, raw results in `benchmarks/bench-results.json`.
+random pseudo-words with a **fresh per-run seed base** (defeats vLLM's
+automatic prefix caching — identical filler across tests silently reuses
+KV and inflates prefill numbers; this bit us once, see the debugging
+section); TTFT = time to first streamed token. Decode rate = completion
+tokens / (total − TTFT).
 
-**Prefill + decode, single stream, prose generation:**
-
-| Prompt size | TTFT | Prefill tok/s | Decode tok/s |
-|---|---|---|---|
-| ~1K | 0.14 s | 7,259 | 80.6 |
-| ~8K | 0.78 s | 10,381 | 79.6 |
-| ~32K | 3.0 s | 10,629 | 79.6 |
-| ~128K | 12.5 s | 10,249 | 78.8 |
-| **~500K** | **54.8 s** | **9,111** | **79.1** |
-
-**Code generation (same protocol, Dijkstra-with-tests task):**
+**Prefill + decode, single stream, prose generation (n=3):**
 
 | Prompt size | TTFT | Prefill tok/s | Decode tok/s |
 |---|---|---|---|
-| ~1K | 0.14 s | 7,685 | 81.2 |
-| ~32K | 3.0 s | 10,608 | 80.3 |
-| ~128K | 12.4 s | 10,292 | 79.5 |
+| ~1K | 0.12 s | 8,854 | 80.5 |
+| ~8K | 0.76 s | 10,487 | 79.8 |
+| ~32K | 3.05 s | 10,497 | 79.0 |
+| ~128K | 12.5 s | 10,188 | 78.8 |
+| **~500K** | **55.1 s** | **9,065** | **78.1** |
+
+**Code generation (same protocol, Dijkstra-with-tests task, n=3):**
+
+| Prompt size | TTFT | Prefill tok/s | Decode tok/s |
+|---|---|---|---|
+| ~1K | 0.12 s | 8,863 | 79.7 |
+| ~32K | 3.05 s | 10,479 | 79.6 |
+| ~128K | 12.6 s | 10,159 | 78.2 |
+
+**Natural-text lane (real English corpus — Gutenberg prose, not synthetic
+pseudo-words — because this model's PLE/n-gram embedding system could in
+principle treat real text differently; it doesn't):**
+
+| Prompt size | TTFT | Prefill tok/s | Decode tok/s |
+|---|---|---|---|
+| ~32K | 3.25 s | 10,536 | 80.1 |
+| ~128K | 13.1 s | 10,412 | 79.8 |
+| **~511K** | **56.4 s** | **9,062** | **78.2** |
 
 **Long code outputs (fixed 2,048-token sustained-generation workload —
 every run ends at `finish_reason: length`, so this measures sustained
@@ -201,14 +211,15 @@ Decode speed is essentially flat from 1K to 500K context (≈79–81 tok/s) —
 context length costs prefill time, not generation speed. Prefill holds
 ~10K tok/s to 128K and drops only ~13% at the 500K extreme.
 
-**Concurrency (prose, ~8K context, 256 output tokens each):**
+**Concurrency (prose, ~8K context, 256 output tokens each; n=3; aggregate =
+end-to-end output throughput **including prefill/TTFT**):**
 
 | Streams | Aggregate output (incl. prefill) | Per-stream decode | Wall time |
 |---|---|---|---|
-| 1 | 80.6 | 80.6 | 5.1 s |
-| 2 | 99.1 | 58–71 | 5.2 s |
-| 3 | 125.8 | 48–66 | 6.1 s |
-| 4 | **145.6** | 41–64 | 7.0 s |
+| 1 | 80.5 | 80.5 | — |
+| 2 | 98.1 (98.1–99.2) | 58–71 | 5.22 s |
+| 3 | 123.9 (123.9–124.3) | 48–66 | 6.2 s |
+| 4 | **143.8 (143.2–144.0)** | 41–64 | 7.12 s |
 
 Throughput scales sub-linearly (batching amortizes the MoE weight reads);
 per-stream rate at c=4 is still a comfortable 41–64 tok/s.
@@ -265,15 +276,24 @@ parallel KV pool, no concurrent streams. We run vLLM.
 ```
 README.md                                   this file
 LICENSE                                     Apache-2.0 (covers the patch files, derived from vLLM)
-launch/serve-qwen38-flashnext-nightly.sh    the launcher (validated as-is; MODEL= overrides the checkpoint path)
+preflight.sh                                run this first: GPU/VRAM/RAM/driver/model/image checks
+.gitignore
+launch/serve-qwen38-flashnext-nightly.sh    the launcher (digest-pinned; DRY_RUN=1 inspects it; PUBLISH=1 / DEBUG=1 opt-ins)
 patches/uva.py                              pinned-direct UVA offloader -> vllm/model_executor/offloader/uva.py
 patches/gpu_worker.py                       warmup_kernels skip -> vllm/v1/worker/gpu_worker.py
 patches/README.md                           exact vLLM commit the patches were cut against; re-diff procedure; deletion criteria
-benchmarks/bench.py                         benchmark harness, completions endpoint (per-request-seeded filler; defeats prefix caching)
-benchmarks/bench-code-long.py               long-output (2048-token) code bench, chat endpoint, thinking disabled
-benchmarks/bench-results.json               raw output of the 2026-09-25 run behind the tables above
-benchmarks/bench-code-long.json             raw output of the long-output code run
-benchmarks/bench-run-2026-09-25.log         console log of the main run
+benchmarks/bench.py                         prose+code ctx sweep, completions endpoint (fresh RUN_BASE seeds)
+benchmarks/bench-code-long.py               fixed 2048-token sustained-generation code bench, chat endpoint
+benchmarks/bench-fullctx-conc.py            full-window boundary + 4-way full-context concurrency proof
+benchmarks/bench-natural.py                 natural-English (Gutenberg corpus) long-context lane
+benchmarks/corpus/                          corpus fetch script + provenance (corpus.txt itself is gitignored)
+benchmarks/bench-median.json                median (min-max) of 3 fresh-seed passes for the headline cells
+benchmarks/runs-prose-{1,2,3}.json          the raw passes behind the medians
+benchmarks/bench-results.json               the original 2026-09-25 single-run reference
+benchmarks/bench-code-long.json             long-output code run (raw)
+benchmarks/bench-fullctx-conc.json          boundary + 4-way proof (raw)
+benchmarks/bench-natural.json               natural-text lane (raw)
+benchmarks/evalplus-humaneval/              HumanEval+ samples + eval configuration
 ```
 
 ## Credits

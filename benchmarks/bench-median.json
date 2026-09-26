@@ -1,0 +1,204 @@
+{
+  "passes": [
+    "2026-09-25 22:10:57 MDT",
+    "2026-09-25 22:13:21 MDT",
+    "2026-09-25 22:15:49 MDT"
+  ],
+  "note": "median (min-max), n=3 fresh-seed passes",
+  "tests": [
+    {
+      "test": "prose ctx~1000",
+      "n": 3,
+      "ttft_s": {
+        "median": 0.12,
+        "min": 0.11,
+        "max": 0.13
+      },
+      "prefill_tok_s": {
+        "median": 8854.0,
+        "min": 8133.0,
+        "max": 8922.0
+      },
+      "decode_tok_s": {
+        "median": 80.5,
+        "min": 79.7,
+        "max": 80.8
+      }
+    },
+    {
+      "test": "prose ctx~8000",
+      "n": 3,
+      "ttft_s": {
+        "median": 0.76,
+        "min": 0.75,
+        "max": 0.77
+      },
+      "prefill_tok_s": {
+        "median": 10487.0,
+        "min": 10368.0,
+        "max": 10810.0
+      },
+      "decode_tok_s": {
+        "median": 79.8,
+        "min": 79.1,
+        "max": 80.1
+      }
+    },
+    {
+      "test": "prose ctx~32000",
+      "n": 3,
+      "ttft_s": {
+        "median": 3.05,
+        "min": 2.91,
+        "max": 3.07
+      },
+      "prefill_tok_s": {
+        "median": 10497.0,
+        "min": 10439.0,
+        "max": 10997.0
+      },
+      "decode_tok_s": {
+        "median": 79.0,
+        "min": 78.9,
+        "max": 79.8
+      }
+    },
+    {
+      "test": "prose ctx~128000",
+      "n": 3,
+      "ttft_s": {
+        "median": 12.54,
+        "min": 12.09,
+        "max": 12.68
+      },
+      "prefill_tok_s": {
+        "median": 10188.0,
+        "min": 10092.0,
+        "max": 10573.0
+      },
+      "decode_tok_s": {
+        "median": 78.8,
+        "min": 78.1,
+        "max": 78.9
+      }
+    },
+    {
+      "test": "prose ctx~500000",
+      "n": 3,
+      "ttft_s": {
+        "median": 55.09,
+        "min": 54.37,
+        "max": 55.56
+      },
+      "prefill_tok_s": {
+        "median": 9065.0,
+        "min": 8997.0,
+        "max": 9191.0
+      },
+      "decode_tok_s": {
+        "median": 78.1,
+        "min": 77.5,
+        "max": 78.6
+      }
+    },
+    {
+      "test": "code  ctx~1000",
+      "n": 3,
+      "ttft_s": {
+        "median": 0.12,
+        "min": 0.12,
+        "max": 0.12
+      },
+      "prefill_tok_s": {
+        "median": 8863.0,
+        "min": 8782.0,
+        "max": 8944.0
+      },
+      "decode_tok_s": {
+        "median": 79.7,
+        "min": 8.2,
+        "max": 80.4
+      }
+    },
+    {
+      "test": "code  ctx~32000",
+      "n": 3,
+      "ttft_s": {
+        "median": 3.05,
+        "min": 3.04,
+        "max": 3.08
+      },
+      "prefill_tok_s": {
+        "median": 10479.0,
+        "min": 10439.0,
+        "max": 10507.0
+      },
+      "decode_tok_s": {
+        "median": 79.6,
+        "min": 78.9,
+        "max": 80.0
+      }
+    },
+    {
+      "test": "code  ctx~128000",
+      "n": 3,
+      "ttft_s": {
+        "median": 12.63,
+        "min": 12.56,
+        "max": 12.65
+      },
+      "prefill_tok_s": {
+        "median": 10159.0,
+        "min": 10105.0,
+        "max": 10188.0
+      },
+      "decode_tok_s": {
+        "median": 78.2,
+        "min": 78.1,
+        "max": 79.3
+      }
+    },
+    {
+      "test": "concurrency=2 (prose, ctx~8000, 256 tok each)",
+      "n": 3,
+      "wall_s": {
+        "median": 5.22,
+        "min": 5.16,
+        "max": 5.22
+      },
+      "aggregate_output_tok_s": {
+        "median": 98.1,
+        "min": 98.1,
+        "max": 99.2
+      }
+    },
+    {
+      "test": "concurrency=3 (prose, ctx~8000, 256 tok each)",
+      "n": 3,
+      "wall_s": {
+        "median": 6.2,
+        "min": 6.18,
+        "max": 6.2
+      },
+      "aggregate_output_tok_s": {
+        "median": 123.9,
+        "min": 123.9,
+        "max": 124.3
+      }
+    },
+    {
+      "test": "concurrency=4 (prose, ctx~8000, 256 tok each)",
+      "n": 3,
+      "wall_s": {
+        "median": 7.12,
+        "min": 7.11,
+        "max": 7.15
+      },
+      "aggregate_output_tok_s": {
+        "median": 143.8,
+        "min": 143.2,
+        "max": 144.0
+      }
+    }
+  ]
+}
