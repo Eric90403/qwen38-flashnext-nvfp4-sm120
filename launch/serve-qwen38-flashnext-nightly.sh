@@ -36,8 +36,13 @@ set -euo pipefail
 #   * gdn_prefill_backend left auto -> FlashInfer prefill (AOT cubins,
 #     head_k_dim=128 satisfied by this checkpoint).
 #   * KV is BF16 (nightly QSA allowlist: auto|bfloat16 — no FP8 KV).
-#   * MTP off: needs open PRs #55313/#55513. MTP=1 flips the switch on the
-#     day they merge (also costs ~2.5 GiB/GPU).
+#   * MTP off: NOT validated on this pinned build (image 2026-09-05,
+#     commit e962733). Upstream has moved since the pin — #55513 (block
+#     FP8 MTP fix for ModelOpt checkpoints) merged 2026-09-08, and the
+#     Qwen4Exp-specific MTP fixes are still open (e.g. #56742) as of
+#     2026-09-25. The old "#55313/#55513 needed" note was wrong: #55313
+#     does not exist. Revalidate on a bumped image before enabling.
+#     MTP=1 keeps the switch ready for that day (~2.5 GiB/GPU cost).
 #   * VRAM/GPU: ~63.4 GiB weights; KV gets ~28 GiB = 2,118,489 tokens
 #     (live /metrics 2026-09-25, GPU_UTIL=0.94) = 4.03 concurrent
 #     full-524288 requests.
@@ -60,8 +65,25 @@ GPU_UTIL=${GPU_UTIL:-0.94}
 MAX_BT=${MAX_BT:-}
 PORT=${PORT:-8007}
 NAME=${NAME:-qwen38-nightly}
-IMAGE=${IMAGE:-vllm/vllm-openai:nightly}
+# PINNED to the exact nightly the patches/ were cut against (vLLM
+# 0.28.1rc1.dev437+ge962733e0, image built 2026-09-05). The two patch
+# files are whole-file overrides: a NEWER nightly would silently get
+# partially replaced by this older patched code. To try a newer build:
+# IMAGE=vllm/vllm-openai:nightly ... then re-diff the patches against
+# the new container's own files (patches/README.md) before trusting it.
+IMAGE=${IMAGE:-vllm/vllm-openai@sha256:89dd8f442a3f4c08c6b3cd634c4f735cd709160651c296596673cf974ea6ee39}
 MODEL=${MODEL:-/mnt/4tb-nvme/4tb-nvme-models/qwen38-flash-next-nvfp4}
+# DRY_RUN=1 prints the docker command and exits BEFORE any side effect
+# (no container removal, no docker run) — use it to inspect the launch
+# config: CTX -> RoPE linkage, PUBLISH binding, DEBUG caps.
+DRY_RUN=${DRY_RUN:-0}
+# PUBLISH=0 (default) binds 127.0.0.1 only. PUBLISH=1 binds 0.0.0.0 —
+# the author serves remote clients over a tailnet this way via a systemd
+# unit outside this repo.
+PUBLISH=${PUBLISH:-0}
+# DEBUG=1 adds SYS_PTRACE + unconfined apparmor/seccomp — needed only
+# for py-spy deadlock hunts, not for normal serving.
+DEBUG=${DEBUG:-0}
 
 # --- manual GPU injection (this host has no nvidia-container-toolkit) --------
 # If your host DOES have the toolkit, delete both blocks below and pass
@@ -75,6 +97,32 @@ DEV_ARGS=(--device /dev/nvidia0 --device /dev/nvidia1 --device /dev/nvidiactl
           --device /dev/nvidia-uvm --device /dev/nvidia-uvm-tools)
 
 # --- model args --------------------------------------------------------------
+# CTX is linked to the RoPE configuration (2026-09-25 review):
+#   262144 = the model's native window -> NO hf-overrides, NO long-len env
+#   524288 = 2x native -> YaRN factor 2.0 override (Qwen card guidance)
+#   anything else -> refuse: unvalidated RoPE configs silently degrade
+#   long-context quality (see README debugging section).
+# MUST nest rope_parameters under text_config -- top-level rope_parameters
+# is a SILENT no-op in vLLM's _apply_dict_overrides for qwen4_exp (fix
+# originally noted by MiaAI-Lab).
+case "$CTX" in
+  262144)
+    ROPE_ARGS=()
+    ;;
+  524288)
+    ROPE_ARGS=(
+      --hf-overrides '{"text_config":{"rope_parameters":{"rope_type":"yarn","factor":2.0,"original_max_position_embeddings":262144}}}'
+    )
+    ;;
+  *)
+    echo "ERROR: CTX=${CTX} has no validated RoPE configuration." >&2
+    echo "       Use CTX=262144 (native window, no YaRN) or CTX=524288" >&2
+    echo "       (YaRN factor 2.0). For anything else, set the RoPE" >&2
+    echo "       parameters yourself and own the long-context risk." >&2
+    exit 1
+    ;;
+esac
+
 args=(
   --model /model
   --served-model-name qwen38-flashnext-nvfp4
@@ -92,22 +140,51 @@ args=(
   # what makes 524288 ctx affordable on 72 GB cards.
   --cpu-offload-gb 24
   --cpu-offload-params ngram_embedding.weight
-  # 524288 = 2x native 262144 window: YaRN factor 2.0 (Qwen card guidance).
-  # MUST nest under text_config -- top-level rope_parameters is a SILENT
-  # no-op in vLLM's _apply_dict_overrides for qwen4_exp (fix originally
-  # noted by MiaAI-Lab).
-  --hf-overrides '{"text_config":{"rope_parameters":{"rope_type":"yarn","factor":2.0,"original_max_position_embeddings":262144}}}'
   --enable-auto-tool-choice
   --tool-call-parser qwen3_coder
   --reasoning-parser qwen3
   --trust-remote-code
   --port "$PORT"
 )
+args+=("${ROPE_ARGS[@]}")
 if [[ "${MTP}" == "1" ]]; then
   args+=(--speculative-config '{"method":"mtp","num_speculative_tokens":3}')
 fi
 if [[ -n "${MAX_BT}" ]]; then
   args+=(--max-num-batched-tokens "$MAX_BT")
+fi
+
+# --- network + security gating ------------------------------------------------
+if [[ "${PUBLISH}" == "1" ]]; then
+  BIND="0.0.0.0"
+else
+  BIND="127.0.0.1"
+fi
+EXTRA_OPTS=()
+if [[ "${DEBUG}" == "1" ]]; then
+  EXTRA_OPTS+=(--cap-add SYS_PTRACE --security-opt apparmor=unconfined --security-opt seccomp=unconfined)
+fi
+
+# --- DRY_RUN: print and exit before ANY side effect ---------------------------
+if [[ "${DRY_RUN}" == "1" ]]; then
+  echo "# DRY_RUN: would execute the following (no side effects performed):"
+  echo "BIND=${BIND} CTX=${CTX} (rope args: ${ROPE_ARGS[*]:-none}) IMAGE=${IMAGE}"
+  echo "docker rm -f ${NAME}   (skipped in DRY_RUN)"
+  echo "docker run -d --name ${NAME} \\"
+  echo "  ${VOL_ARGS[*]} ${DEV_ARGS[*]} \\"
+  echo "  ${EXTRA_OPTS[*]:+${EXTRA_OPTS[*]}} \\"
+  echo "  --ipc=host \\"
+  echo "  -p ${BIND}:${PORT}:${PORT} \\"
+  echo "  -v ${MODEL}:/model:ro \\"
+  echo "  -v ${PATCH_DIR}/uva.py:.../vllm/model_executor/offloader/uva.py:ro \\"
+  echo "  -v ${PATCH_DIR}/gpu_worker.py:.../vllm/v1/worker/gpu_worker.py:ro \\"
+  echo "  -e VLLM_SKIP_WARMUP_KERNELS=1 -e NCCL_P2P_DISABLE=1 \\"
+  if [[ "$CTX" == "524288" ]]; then echo "  -e VLLM_ALLOW_LONG_MAX_MODEL_LEN=1 \\"; fi
+  echo "  -e NCCL_DEBUG=WARN -e VLLM_RPC_TIMEOUT=900000 \\"
+  echo "  -e VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS=7200 \\"
+  echo "  ${IMAGE} \\"
+  echo "  ${args[*]}"
+  exit 0
 fi
 
 # --- (re)start ---------------------------------------------------------------
@@ -118,11 +195,9 @@ done
 
 docker run -d --name "$NAME" \
   "${VOL_ARGS[@]}" "${DEV_ARGS[@]}" \
-  --cap-add SYS_PTRACE \
-  --security-opt apparmor=unconfined \
-  --security-opt seccomp=unconfined \
+  "${EXTRA_OPTS[@]}" \
   --ipc=host \
-  -p "${PORT}:${PORT}" \
+  -p "${BIND}:${PORT}:${PORT}" \
   -v "$MODEL:/model:ro" \
   -v "$PATCH_DIR/uva.py:/usr/local/lib/python3.12/dist-packages/vllm/model_executor/offloader/uva.py:ro" \
   -v "$PATCH_DIR/gpu_worker.py:/usr/local/lib/python3.12/dist-packages/vllm/v1/worker/gpu_worker.py:ro" \
@@ -131,7 +206,7 @@ docker run -d --name "$NAME" \
   -v "${NAME}-triton-cache:/root/.triton" \
   -v "${NAME}-inductor-cache:/tmp/torchinductor_root" \
   -e NCCL_P2P_DISABLE=1 \
-  -e VLLM_ALLOW_LONG_MAX_MODEL_LEN=1 \
+  $([[ "$CTX" == "524288" ]] && echo -e VLLM_ALLOW_LONG_MAX_MODEL_LEN=1) \
   -e NCCL_DEBUG=WARN \
   -e VLLM_RPC_TIMEOUT=900000 \
   -e VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS=7200 \
