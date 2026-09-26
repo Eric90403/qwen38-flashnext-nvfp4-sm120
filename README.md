@@ -18,12 +18,15 @@ consumer/workstation Blackwell stop short of two things we do here:
 1. **512K context on 72 GB cards.** The model carries a 51B-parameter n-gram
    embedding table (PLE) that naively eats ~24 GiB *per GPU* at TP2, leaving
    no KV-cache room past ~395K tokens. We park that table in pinned host RAM
-   behind vLLM's UVA zero-copy offloader, which frees ~23.8 GiB/GPU and grows
-   the KV pool to 2,118,489 tokens — four concurrent full-length requests,
-   verified live at 97.3% pool occupancy.
+   — natively via vLLM's `--engram-config` CPU offload (#54371, in every
+   nightly since 2026-09-09; before that, via our patch to the generic UVA
+   offloader). This frees ~23.8 GiB/GPU and grows the KV pool to 2,112,392
+   tokens — four concurrent full-length requests, verified live at 97.5%
+   pool occupancy.
 2. **The sm_120 + PCIe TP2 trap field.** vLLM's custom all-reduce deadlocks
    this class of machine; the inductor autotuner OOMs by cloning the PLE
-   table; the V2 runner's kernel warmup wedges; and at high
+   table; the V2 runner's kernel warmup wedged (fixed upstream since
+   2026-09-22); and at high
    gpu-memory-utilization a fresh full-length prefill OOMs one rank and
    wedges the other. Each failure mode looks unrelated to the next.
    We document all four with symptoms and fixes.
@@ -48,7 +51,8 @@ Qwen4. The NVFP4 checkpoint (`nvidia/Qwen3.8-Flash-Next-NVFP4`, on HF since
 tensors are carried byte-for-byte from `Qwen3.8-Flash-Next-FP8`) puts
 ~63 GiB of weights land on each card during load; at steady state
 ~38.8 GiB of weights + non-torch stays on-card (the ~23.8 GiB PLE shard
-pins to host RAM), leaving **26.5 GiB = 2,118,489 KV tokens per card**.
+pins to host RAM), leaving **26.4 GiB of KV per card = 2,112,392 tokens**
+for the pool.
 
 ## Hardware we validated on
 
@@ -78,22 +82,26 @@ hf download nvidia/Qwen3.8-Flash-Next-NVFP4 --local-dir ./qwen38-flash-next-nvfp
 # 2. Launch (launcher finds patches/ relative to itself; MODEL overrides path)
 MODEL=./qwen38-flash-next-nvfp4 ./launch/serve-qwen38-flashnext-nightly.sh
 
-# 3. Verify (~8 min cold start, longer on first JIT)
+# 3. Verify (~8 min cold start; ~3 min with the named-cache volumes warm)
 curl -s http://localhost:8007/v1/models      # -> qwen38-flashnext-nvfp4
 curl -s http://localhost:8007/health
 curl -s http://localhost:8007/metrics | grep cache_config_info
-#    ^ confirm kv_cache_size_tokens≈2118489 (at GPU_UTIL=0.94) — proof the
-#      UVA offload + pinned-direct patch loaded (see patches/README.md)
+#    ^ confirm kv_cache_size_tokens≈2112392 (at GPU_UTIL=0.94, MTP=0) —
+#      proof the Engram CPU offload is active. With MTP=1 the pool is
+#      1739614 tokens (the MTP head claims the difference).
 ```
 
 If your host runs `nvidia-container-toolkit`, delete the "manual GPU
 injection" block from the launcher and pass `--gpus all` instead — that
 block exists because our host deliberately doesn't run the toolkit hook.
 
-The two patched files in `patches/` bind-mount over the container's copies.
-They are whole upstream modules with two small edits; **cut against vLLM
-commit `e962733` (the nightly above)** — see `patches/README.md` for the
-edits, the re-diff procedure on image bumps, and when to delete them.
+**The default mode (`NATIVE=1`) runs ZERO patches.** The launcher pins the
+2026-09-26 nightly (vLLM `0.30.1rc1.dev193+gddd6fbca1`) and asserts the
+image's own Engram/PLE modules import before launching. `NATIVE=0` restores
+the September-5 pinned build with the two historical bind-mounted files in
+`patches/` — kept for rollback and for anyone who cannot bump images; the
+launcher refuses to pair a mode with the wrong image. See `patches/README.md`
+for what each patch did and which upstream PR replaced it.
 
 ## The flags, and why each one is load-bearing
 
@@ -109,39 +117,80 @@ vllm serve /model \
   --disable-custom-all-reduce \
   --no-enable-flashinfer-autotune \
   --compilation-config '{"mode": 0, "cudagraph_mode": "FULL_DECODE_ONLY"}' \
-  --cpu-offload-gb 24 \
-  --cpu-offload-params ngram_embedding.weight \
+  --engram-config '{"cpu_offload": true}' \
   --hf-overrides '{"text_config":{"rope_parameters":{"rope_type":"yarn","factor":2.0,"original_max_position_embeddings":262144}}}' \
   --enable-auto-tool-choice --tool-call-parser qwen3_coder \
   --reasoning-parser qwen3 --trust-remote-code --port 8007
 ```
 
 Plus container env: `-e VLLM_ALLOW_LONG_MAX_MODEL_LEN=1`,
-`-e VLLM_SKIP_WARMUP_KERNELS=1` (with the `gpu_worker.py` patch),
-`-e NCCL_P2P_DISABLE=1`.
+`-e NCCL_P2P_DISABLE=1`. (The legacy `NATIVE=0` build instead carries
+`--cpu-offload-gb 24 --cpu-offload-params ngram_embedding.weight`, the two
+bind-mounted patch files, and `-e VLLM_SKIP_WARMUP_KERNELS=1`.)
 
 | Flag | Why | What breaks without it |
 |---|---|---|
-| `--cpu-offload-gb 24 --cpu-offload-params ngram_embedding.weight` | vLLM's UVAOffloader parks the 23.84 GiB/rank FP8 n-gram table in pinned host RAM; GPU reads rows zero-copy over PCIe | KV pool caps at ~395K tokens — **524K context simply won't fit** |
-| `patches/uva.py` | Upstream allocates the shard pageable (`.to("cpu")`) *then* pinned (`.pin_memory()`) — both alive at once: 51 GB/worker, 102 GB for TP2, host-OOM-ing a 125 GB host. The patch allocates pinned directly and copies once | Kernel OOM during weight load; the vLLM log ends mid-startup with **no error** and released VRAM |
+| `--engram-config '{"cpu_offload": true}'` | The model-declared Engram/PLE path (#54371): the FP8 n-gram table shards (~23.8 GiB/rank) are allocated directly in pinned host RAM at load and read from the Triton kernel over UVA, with prefetch on a side CUDA stream. `true` is the default; passing it explicitly keeps the launch self-documenting | KV pool caps at ~395K tokens — **524K context simply won't fit** |
+| *(legacy `NATIVE=0`)* `--cpu-offload-gb 24 --cpu-offload-params ngram_embedding.weight` + `patches/uva.py` | The generic UVAOffloader parks the table behind a zero-copy device view; the patch made its loader allocate pinned directly (upstream keeps pageable + pinned copies alive at once: 102 GB for TP2 on a 125 GB host). Superseded entirely by the native row above — the native path never puts the table on GPU | Kernel OOM during weight load; the vLLM log ends mid-startup with **no error** and released VRAM |
 | `--disable-custom-all-reduce` | vLLM's custom P2P all-reduce **deadlocks on this hardware class** — both ranks spin forever at the first embedding all-reduce, even with `NCCL_P2P_DISABLE=1` (that env var only steers NCCL, not vLLM's custom kernels) | Wedge at ~100 W GPU / 0% mem util, first request never completes. Symptom class: stack parked inside `hyperconnection.py mix` (backpressure *behind* the jammed all-reduce) |
 | `--compilation-config '{"mode":0, "cudagraph_mode":"FULL_DECODE_ONLY"}'` | Mode 0 (no torch.compile/inductor) makes the autotuner's PLE-table-clone OOM unreachable (same failure tonyd615 documented on 2× Spark; vLLM PR #55272), while CUDA graphs still capture decode | Inductor autotune clones the full 47.7 GiB PLE table as a compile-time constant → OOM. Decode without graphs: 24.9 tok/s vs 72.5 with |
 | `--distributed-executor-backend mp` | Multiproc TP on sm_120 workstation cards | — (Ray backend works but adds nothing here) |
-| `VLLM_SKIP_WARMUP_KERNELS=1` + `patches/gpu_worker.py` | The V2 runner's `warmup_kernels` runs a forward pass **without PLE inputs**, which spins the PLE custom op. The patch makes the skip flag effective so the first *real* request exercises the path. **Scope caveat:** skipping `warmup_kernels()` is a workaround validated on this exact hardware/model/build combination — it is NOT a general-purpose safety measure, and on other models or GPUs it may skip genuinely needed warmup (graph capture, autotuning). If you run this repo on anything else, re-validate from a clean boot first | 40+ minute hang during startup, GPU pegged at ~100 W |
+| *(legacy `NATIVE=0` only)* `VLLM_SKIP_WARMUP_KERNELS=1` + `patches/gpu_worker.py` | The V2 runner's `warmup_kernels` ran a forward pass **without PLE inputs**, spinning the PLE custom op for 40+ min at ~100 W. Upstream fixed this properly (#55146 + #58197: mode-0/eager skips JIT warmup — in every nightly since 2026-09-22), so `NATIVE=1` needs neither the flag nor the patch | On the legacy build: 40+ minute hang during startup, GPU pegged at ~100 W |
 | `--hf-overrides` YaRN **nested under `text_config`** + `VLLM_ALLOW_LONG_MAX_MODEL_LEN=1` | 524288 = 2× the native 262144 window; Qwen's own card prescribes YaRN factor 2.0. The nesting is mandatory — **top-level `rope_parameters` is a silent no-op** in vLLM's `_apply_dict_overrides` for qwen4_exp (fix originally noted by MiaAI-Lab) | Silent no-op: you believe you have YaRN, you have the 262K window, and long-context quality is quietly wrong |
-| `--gpu-memory-utilization 0.94` `--max-num-seqs 4` | Steady state per card (vLLM startup log): 38.8 GiB weights + non-torch (PLE shard pinned in host RAM), 1.6 GiB activation/graphs, **26.5 GiB KV = 2,118,489 tokens** — **4 concurrent full-length requests verified live**: four simultaneous ~515K-token prompts (2,059,209 prompt tokens at once = 97.3% of the pool) all completed, see `benchmarks/bench-fullctx-conc.json`. 0.94, not higher: a **fresh ~512K prefill OOMs at 0.97** — the QSA prefill indexer needs ~2 GB of activation headroom beyond steady state; at 0.97 rank 1 died mid-prefill (512 MiB alloc failure, 491 MiB free) and rank 0 spun at 100% waiting for its dead peer | At 0.97: single 500K-token prompt bricks the server; other in-flight requests hang forever behind the dead rank |
+| `--gpu-memory-utilization 0.94` `--max-num-seqs 4` | Steady state per card (vLLM startup log): 38.8 GiB weights + non-torch (PLE shard pinned in host RAM), 1.6 GiB activation/graphs, **26.5 GiB KV = 2,112,392 tokens** — **4 concurrent full-length requests verified live**: four simultaneous ~515K-token prompts (2,059,947 prompt tokens at once ≈ 97.5% of the pool) all completed on the native build, see `benchmarks/runs-fullctx-native-2026-09-26.json`. 0.94, not higher: a **fresh ~512K prefill OOMs at 0.97** — the QSA prefill indexer needs ~2 GB of activation headroom beyond steady state; at 0.97 rank 1 died mid-prefill (512 MiB alloc failure, 491 MiB free) and rank 0 spun at 100% waiting for its dead peer | At 0.97: single 500K-token prompt bricks the server; other in-flight requests hang forever behind the dead rank |
 | `--no-enable-flashinfer-autotune` | Avoids first-request autotune stalls on SM120 where FlashInfer AOT cubins already cover this checkpoint's shapes | Long, unpredictable first requests |
 | `--quantization modelopt` + `--trust-remote-code` | NVFP4 via NVIDIA Model Optimizer's quant config (checkpoint ships `hf_quant_config.json`); qwen4_exp modeling code ships with the checkpoint | Refuses to load / wrong kernels |
 
-**MTP speculative decoding: not validated on this build.** The pinned
-image (2026-09-05) predates the merged upstream MTP work; #55513 (block
-FP8 MTP fix for ModelOpt checkpoints) merged 2026-09-08, Qwen4Exp-specific
-MTP fixes are still open upstream (e.g. #56742) as of 2026-09-25. (The
-original "needs #55313/#55513" note in earlier revisions was wrong —
-#55313 does not exist.) Revalidate on a bumped image before enabling;
-the launcher keeps the `MTP=1` switch for that day.
+**MTP speculative decoding: validated on the native build (2026-09-26).**
+`MTP=1` appends `--speculative-config '{"method":"mtp","num_speculative_tokens":3}'`.
+It boots clean on the pinned Sep-26 nightly: the block-FP8 ModelOpt loading
+fix (#55513, merged 2026-09-08) makes the `Qwen4ExpMTP` architecture resolve
+and load against this checkpoint. Measured single-stream (one pass each):
+decode 133–144 tok/s prose and 176 tok/s code vs 90.9–93.7 with `MTP=0`,
+acceptance 46% of draft tokens (1,857 accepted of 4,023 drafted over 1,341
+drafts, temp 0.7). The cost: the MTP head plus speculator graph capture
+shrink the KV pool 2,112,392 → 1,739,614 tokens, so full-context concurrency
+drops 4.03× → 3.32× — **the four-concurrent-full-length claim needs
+`MTP=0`.** A 512K-token needle stayed correct with MTP on (recall is not
+speculation-dependent, but we checked). Some Qwen4Exp-specific MTP fixes are
+still open upstream (e.g. #56742) as of 2026-09-25. (The old
+"needs #55313/#55513" note in earlier revisions was wrong — #55313 does not
+exist.) Multi-stream effect on aggregate throughput is not yet measured.
 
-## Measured performance (2026-09-25; headline cells are **median of 3 passes**, range in `benchmarks/bench-median.json`)
+## Measured performance
+
+**Native build — nightly `gddd6fbca1` (2026-09-26, zero patches).** Single
+pass per cell; treat as ±3% of a 3-pass median. Raw files:
+`benchmarks/runs-native-ple-2026-09-26.json`,
+`benchmarks/runs-fullctx-native-2026-09-26.json`. Decode at the same
+protocol (prose task, `MTP=0` unless noted):
+
+| Prompt size | TTFT | Prefill tok/s | Decode tok/s | Decode tok/s (MTP=1) |
+|---|---|---|---|---|
+| ~1K | 0.13 s | 8,269 | 93.7 | 133.5 |
+| ~8K | 0.78 s | 10,387 | 93.5 | — |
+| ~32K | 2.64 s | 12,126 | 92.8 | 144.1 |
+| ~128K | 10.8 s | 11,835 | 91.8 | — |
+| **~500K** | **48.7 s** | **10,283** | **90.9** | **133.0** |
+
+The native offload path (#54371 + #56926 serialized huge-page host tables)
+decodes ~15% faster than the patched build at every context length, and
+single-stream MTP roughly doubles it again (133–176 tok/s; see the MTP note
+above for the KV-pool cost). Code lane, MTP=0: 93.3 / 92.2 / 91.3–91.5
+(1K/32K/128K). Concurrency (MTP=0): c=3 140.3 and c=4 141.5 aggregate —
+in line with the legacy medians (126/146); the c=2 pass measured 79.8 due
+to TTFT serialization in a single pass and is a timing artifact, not a
+regression. Full-context boundary (522K in + 1,024 out, single request):
+TTFT 51.8 s, decode 89.2 tok/s; four simultaneous ~515K requests all
+completed, wall 215.8 s (~97.5% of the 2,112,392-token pool). 524K needle
+recall 3/3 at 25/50/90% depth (MTP=0) and correct at 50% with MTP=1.
+(Honest raw-data note: one `code ~128K` row of the native sweep shows
+`completion_tokens: 1` — an early-EOS artifact at temp 0.7, reproduced
+neither before nor after; clean retests at that cell ran 91.3–91.5 tok/s.)
+
+**Legacy patched build — `e962733e0` (2026-09-25; headline cells are
+median of 3 passes, range in `benchmarks/bench-median.json`).** Kept for
+comparison; the method notes below apply to both eras.
 
 Method: `/v1/completions`, temperature 0.7, streamed; filler context is
 random pseudo-words with a **fresh per-run seed base** (defeats vLLM's
@@ -207,8 +256,8 @@ stream runs for the full 2,048 tokens — the batch never drains to
 single-stream speedups.)
 
 **Full-context concurrency (the 4-way proof):** four simultaneous
-~515K-token prompts all completed — 2,059,209 prompt tokens held at once,
-97.3% of the KV pool. Behavior at that occupancy: chunked prefill admits
+~515K-token prompts all completed — 2,059,947 prompt tokens held at once,
+~97.5% of the KV pool. Behavior at that occupancy: chunked prefill admits
 streams staggered (TTFTs 57–236 s), and near-full-pool decode batches
 serialize — expect minutes, not seconds, per stream. Raw data:
 `benchmarks/bench-fullctx-conc.json`.
@@ -238,9 +287,9 @@ per-stream rate at c=4 is still a comfortable 41–64 tok/s.
 |---|---|
 | **HumanEval+ pass@1 (EvalPlus, greedy, thinking off)** | **0.945 base / 0.921+** — 164/164 problems, sandboxed evaluation |
 | Cold start | ~8 min (JIT caches in named Docker volumes make restarts fast) |
-| Long-context recall | YaRN 2.0 needle tests 3/3 correct at 25% / 50% / 90% depth (2026-09-22) |
-| KV pool (GMU 0.94) | 2,118,489 tokens — 4 concurrent full-context requests **verified live** (four ~515K prompts, 97.3% occupancy, `bench-fullctx-conc.json`) |
-| Full-window boundary | single request: 523,012-token prompt + 1,024 output — TTFT 55.7 s, 77.4 tok/s (`bench-fullctx-conc.json`) |
+| Long-context recall | YaRN 2.0 needle tests 3/3 correct at 25% / 50% / 90% depth (2026-09-22; re-verified 3/3 on the native build 2026-09-26, plus 1/1 at 50% depth with MTP=1) |
+| KV pool (GMU 0.94) | 2,112,392 tokens — 4 concurrent full-context requests **verified live** (four ~515K prompts, ~97.5% occupancy, `runs-fullctx-native-2026-09-26.json`) |
+| Full-window boundary | single request: 521,681-token prompt + 1,024 output — TTFT 51.8 s, 89.2 tok/s (native build; legacy was 55.7 s / 77.4 tok/s, `bench-fullctx-conc.json`) |
 
 Eval configuration: [EvalPlus](https://github.com/evalplus/evalplus) `--backend openai`
 against the live server, temperature 0.0 (`--greedy`),
@@ -302,7 +351,9 @@ benchmarks/bench-median.json                median (min-max) of 3 fresh-seed pas
 benchmarks/runs-prose-{1,2,3}.json          the raw passes behind the medians
 benchmarks/bench-results.json               the original 2026-09-25 single-run reference
 benchmarks/bench-code-long.json             long-output code run (raw)
-benchmarks/bench-fullctx-conc.json          boundary + 4-way proof (raw)
+benchmarks/bench-fullctx-conc.json          boundary + 4-way proof (raw, legacy build)
+benchmarks/runs-native-ple-2026-09-26.json  native build (zero-patch) full sweep, raw
+benchmarks/runs-fullctx-native-2026-09-26.json  native build boundary + 4-way proof, raw
 benchmarks/bench-natural.json               natural-text lane (raw)
 benchmarks/evalplus-humaneval/              HumanEval+ samples + eval configuration
 ```

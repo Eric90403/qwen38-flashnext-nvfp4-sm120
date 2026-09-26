@@ -1,5 +1,13 @@
 # patches/ — provenance and maintenance
 
+> **SUPERSEDED (2026-09-26).** Both files are historical: the native Engram
+> PLE path (#54371) makes `uva.py` irrelevant (tables are allocated pinned
+> host-side by the model itself — the generic offloader is not used), and
+> #55146 + #58197 upstream fixed the warmup wedge that `gpu_worker.py`
+> worked around. The launcher's default `NATIVE=1` mode runs neither. Keep
+> reading for the `NATIVE=0` legacy path (pinned Sep-5 image) and for what
+> each edit did.
+
 These two files are **complete copies of upstream vLLM modules with our
 edits applied**, designed to bind-mount over the container's originals.
 They are derived from the vLLM project (Apache-2.0); the unmodified

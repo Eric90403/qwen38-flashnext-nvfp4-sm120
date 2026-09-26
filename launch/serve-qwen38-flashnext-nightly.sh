@@ -8,15 +8,52 @@ set -euo pipefail
 # See ../patches/README.md for what the two bind-mounted files change and
 # which upstream commit they were read against.
 #
+# NATIVE PLE era (2026-09-26): upstream #54371 (merged 2026-09-09) ships
+# model-declared Engram/PLE CPU offload in every nightly after it; the two
+# bind-mount patches were superseded upstream (#58197 + #55146 replaced
+# gpu_worker.py; uva.py only mattered for the GENERIC offloader, which the
+# native path does not use). NATIVE=1 (default) runs ZERO patches against
+# the pinned 2026-09-26 nightly (vllm 0.30.1rc1.dev193+gddd6fbca1).
+# NATIVE=0 is the legacy pinned Sep-5 build WITH patches, kept for
+# rollback — the launcher refuses to pair either mode with the wrong image.
+NATIVE=${NATIVE:-1}
+LEGACY_IMAGE=vllm/vllm-openai@sha256:89dd8f442a3f4c08c6b3cd634c4f735cd709160651c296596673cf974ea6ee39
+NATIVE_IMAGE=vllm/vllm-openai@sha256:1b88c3afc77c73a3858730254d6eaf73fd7ff6e226ced60f069d9277fd8d6b2b
+if [[ "$NATIVE" == "1" ]]; then
+  IMAGE=${IMAGE:-$NATIVE_IMAGE}
+else
+  IMAGE=${IMAGE:-$LEGACY_IMAGE}
+fi
+if [[ "$NATIVE" == "1" && "$IMAGE" == "$LEGACY_IMAGE" ]]; then
+  echo "ERROR: NATIVE=1 (no patches) with the Sep-5 legacy image: that build" >&2
+  echo "       predates the eager-mode warmup fix (#58197) and would wedge at" >&2
+  echo "       startup. Use NATIVE=0 for the legacy image." >&2
+  exit 1
+fi
+if [[ "$NATIVE" != "1" && "$IMAGE" != "$LEGACY_IMAGE" ]]; then
+  echo "ERROR: NATIVE=0 bind-mounts whole-file patches; pairing them with" >&2
+  echo "       any image other than the pinned Sep-5 build silently replaces" >&2
+  echo "       newer code with older files. Re-diff patches/ first" >&2
+  echo "       (../patches/README.md), or run NATIVE=1." >&2
+  exit 1
+fi
+#
 # What each unusual piece here is for (full rationale in ../README.md):
 #   * qwen4_exp is MERGED upstream: the stock nightly image runs this model,
-#     no fork overlay. Two bind-mounted files are the only source deltas.
-#   * --cpu-offload-gb 24 --cpu-offload-params ngram_embedding.weight:
-#     native UVA offload parks the FP8 n-gram (PLE) table shard (~23.8 GiB
-#     per rank) in pinned host RAM behind a zero-copy device view. Without
-#     it the KV pool caps at ~395k tokens and 524288 ctx does not fit.
-#     patches/uva.py fixes a host-OOM in that loader (pageable + pinned
-#     copies coexist: ~51 GB/worker, 102 GB for TP2 on a 125 GB host).
+#     no fork overlay. NATIVE=1 has ZERO source deltas; NATIVE=0 carries the
+#     two historical bind-mounted files (see ../patches/README.md).
+#   * PLE CPU offload — the piece that makes 524288 ctx fit on 72 GB cards:
+#     NATIVE=1: --engram-config '{"cpu_offload": true}' (#54371): the model
+#       itself allocates the FP8 n-gram (PLE) table shards (~23.8 GiB/rank)
+#       in pinned host RAM at load; lookups run from the Triton kernel over
+#       UVA, prefetching on a side CUDA stream. #56926 packs the host tables
+#       into huge pages and serializes offloaded lookups.
+#     NATIVE=0: --cpu-offload-gb 24 --cpu-offload-params
+#       ngram_embedding.weight — the GENERIC UVA offloader parks the table
+#       behind a zero-copy device view; patches/uva.py fixes a host-OOM in
+#       that loader (pageable + pinned copies coexist: ~51 GB/worker,
+#       102 GB for TP2 on a 125 GB host). Without offload of any kind the
+#       KV pool caps at ~395k tokens and 524288 ctx does not fit.
 #   * --disable-custom-all-reduce: vLLM's custom P2P all-reduce deadlocks
 #     this box class (both ranks spin at the first embedding all-reduce).
 #     NCCL_P2P_DISABLE=1 does NOT cover it — that env var only steers NCCL.
@@ -25,11 +62,14 @@ set -euo pipefail
 #     -> OOM (PR #55272 discussion; first documented on 2x DGX Spark by
 #     tonyd615). Mode 0 never enters inductor; CUDA graphs still capture
 #     decode (24.9 -> 72.5 tok/s). Do not add --enforce-eager.
-#   * VLLM_SKIP_WARMUP_KERNELS=1 + patches/gpu_worker.py: the V2 runner's
-#     warmup_kernels runs a forward WITHOUT prepared PLE inputs, and the
-#     qwen4_exp PLE op spins forever on sm_120 (40+ min startup wedge at
-#     ~100 W). The patch honors the env var; V2 runner stays ON (V1 errors
-#     "PLE inputs were not prepared" and cannot run this model at all).
+#   * Warmup wedge (NATIVE=0 only): the V2 runner's warmup_kernels runs a
+#     forward WITHOUT prepared PLE inputs, and the qwen4_exp PLE op spins
+#     forever on sm_120 (40+ min startup wedge at ~100 W). patches/gpu_worker.py
+#     honors VLLM_SKIP_WARMUP_KERNELS=1 to skip it. Upstream fixed this
+#     properly in #55146 + #58197 (eager/mode-0 skips JIT warmup) — both in
+#     every nightly since 2026-09-22, so NATIVE=1 needs no patch: startup is
+#     clean (observed 2026-09-26). V2 runner stays ON in both modes (V1
+#     errors "PLE inputs were not prepared" and cannot run this model at all).
 #   * GDN decode: nightly default is the AOT fused CUDA kernel. If the op
 #     is ever missing vLLM logs "Falling back to the Triton GDN decode
 #     path" — watch for that line after image bumps.
@@ -68,13 +108,9 @@ GPU_UTIL=${GPU_UTIL:-0.94}
 MAX_BT=${MAX_BT:-}
 PORT=${PORT:-8007}
 NAME=${NAME:-qwen38-nightly}
-# PINNED to the exact nightly the patches/ were cut against (vLLM
-# 0.28.1rc1.dev437+ge962733e0, image built 2026-09-05). The two patch
-# files are whole-file overrides: a NEWER nightly would silently get
-# partially replaced by this older patched code. To try a newer build:
-# IMAGE=vllm/vllm-openai:nightly ... then re-diff the patches against
-# the new container's own files (patches/README.md) before trusting it.
-IMAGE=${IMAGE:-vllm/vllm-openai@sha256:89dd8f442a3f4c08c6b3cd634c4f735cd709160651c296596673cf974ea6ee39}
+# IMAGE is resolved by the mode gate at the top: NATIVE_IMAGE (Sep-26
+# nightly, zero patches) or LEGACY_IMAGE (Sep-5 build + patches). Override
+# with IMAGE=... only after reading the pairing warnings there.
 MODEL=${MODEL:-/mnt/4tb-nvme/4tb-nvme-models/qwen38-flash-next-nvfp4}
 # DRY_RUN=1 prints the docker command and exits BEFORE any side effect
 # (no container removal, no docker run) — use it to inspect the launch
@@ -138,11 +174,7 @@ args=(
   --no-enable-flashinfer-autotune
   --disable-custom-all-reduce
   --compilation-config '{"mode": 0, "cudagraph_mode": "FULL_DECODE_ONLY"}'
-  # Native UVA weight offload: park the FP8 n-gram table in pinned host RAM
-  # behind a zero-copy device view. Frees ~23.8 GiB/GPU for KV, which is
-  # what makes 524288 ctx affordable on 72 GB cards.
-  --cpu-offload-gb 24
-  --cpu-offload-params ngram_embedding.weight
+  # PLE offload flag is chosen by mode (see header): appended after the array.
   --enable-auto-tool-choice
   --tool-call-parser qwen3_coder
   --reasoning-parser qwen3
@@ -150,6 +182,12 @@ args=(
   --port "$PORT"
 )
 args+=("${ROPE_ARGS[@]}")
+# PLE offload path by mode (header notes explain both):
+if [[ "$NATIVE" == "1" ]]; then
+  args+=(--engram-config '{"cpu_offload": true}')
+else
+  args+=(--cpu-offload-gb 24 --cpu-offload-params ngram_embedding.weight)
+fi
 if [[ "${MTP}" == "1" ]]; then
   args+=(--speculative-config '{"method":"mtp","num_speculative_tokens":3}')
 fi
@@ -190,9 +228,14 @@ if [[ "${DRY_RUN}" == "1" ]]; then
   echo "  --ipc=host \\"
   echo "  -p ${BIND}:${PORT}:${PORT} \\"
   echo "  -v ${MODEL}:/model:ro \\"
-  echo "  -v ${PATCH_DIR}/uva.py:.../vllm/model_executor/offloader/uva.py:ro \\"
-  echo "  -v ${PATCH_DIR}/gpu_worker.py:.../vllm/v1/worker/gpu_worker.py:ro \\"
-  echo "  -e VLLM_SKIP_WARMUP_KERNELS=1 -e NCCL_P2P_DISABLE=1 \\"
+  if [[ "$NATIVE" == "1" ]]; then
+    echo "  (NATIVE=1: no patch mounts, no VLLM_SKIP_WARMUP_KERNELS)"
+  else
+    echo "  -v ${PATCH_DIR}/uva.py:.../vllm/model_executor/offloader/uva.py:ro \\"
+    echo "  -v ${PATCH_DIR}/gpu_worker.py:.../vllm/v1/worker/gpu_worker.py:ro \\"
+    echo "  -e VLLM_SKIP_WARMUP_KERNELS=1"
+  fi
+  echo "  -e NCCL_P2P_DISABLE=1 \\"
   if [[ "$CTX" == "524288" ]]; then echo "  -e VLLM_ALLOW_LONG_MAX_MODEL_LEN=1 \\"; fi
   echo "  -e NCCL_DEBUG=WARN -e VLLM_RPC_TIMEOUT=900000 \\"
   echo "  -e VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS=7200 \\"
@@ -205,23 +248,45 @@ fi
 # PATCH_MOUNTS is the single source of truth for the two bind mounts —
 # used first by the assertion probe below, then by the real launch. The
 # target paths hardcode the image's python3.12 dist-packages layout.
-PATCH_MOUNTS=(
-  -v "$PATCH_DIR/uva.py:/usr/local/lib/python3.12/dist-packages/vllm/model_executor/offloader/uva.py:ro"
-  -v "$PATCH_DIR/gpu_worker.py:/usr/local/lib/python3.12/dist-packages/vllm/v1/worker/gpu_worker.py:ro"
-)
+# In NATIVE=1 mode both arrays stay empty: no patches, no warmup env.
+PATCH_MOUNTS=()
+SKIPWARM_ENV=()
+if [[ "$NATIVE" != "1" ]]; then
+  PATCH_MOUNTS=(
+    -v "$PATCH_DIR/uva.py:/usr/local/lib/python3.12/dist-packages/vllm/model_executor/offloader/uva.py:ro"
+    -v "$PATCH_DIR/gpu_worker.py:/usr/local/lib/python3.12/dist-packages/vllm/v1/worker/gpu_worker.py:ro"
+  )
+  SKIPWARM_ENV=(-e VLLM_SKIP_WARMUP_KERNELS=1)
+fi
 if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
   echo "ERROR: image $IMAGE is not present locally — docker pull it first" >&2
   echo "       (the launcher never pulls; see preflight.sh check 8)." >&2
   exit 1
 fi
-# Boot-time patch assertion: prove the image's OWN interpreter imports
-# both modules WITH the "TRX50 patch" markers, BEFORE touching the
-# running container. A moved dist-packages path (image bump) or a lost
-# mount then fails the launch here instead of silently serving unpatched
-# code — which on this recipe means host OOM at load (uva.py) or the
-# 40-minute warmup wedge (gpu_worker.py). This proves the mounts are
-# EFFECTIVE, not that their content is fresh; on every image bump the
-# re-diff in ../patches/README.md remains mandatory.
+# Boot-time assertion, mode-aware:
+#  NATIVE=1 -> prove the image ITSELF carries the model-side Engram/PLE
+#    CPU-offload path (config module + ngram embedding module importable).
+#    If a future nightly refactors these paths, the launch fails HERE
+#    instead of silently loading the whole 47.7 GiB table onto the GPUs.
+#  NATIVE=0 -> the legacy patch assertion: prove the image's OWN interpreter
+#    imports both modules WITH the "TRX50 patch" markers, BEFORE touching the
+#    running container. A moved dist-packages path (image bump) or a lost
+#    mount then fails the launch here instead of silently serving unpatched
+#    code — which on this recipe means host OOM at load (uva.py) or the
+#    40-minute warmup wedge (gpu_worker.py). This proves the mounts are
+#    EFFECTIVE, not that their content is fresh; on every image bump the
+#    re-diff in ../patches/README.md remains mandatory.
+if [[ "$NATIVE" == "1" ]]; then
+  if ! probe_out="$(docker run --rm --entrypoint python3 "$IMAGE" -c '
+import vllm.config.engram, vllm.models.qwen4_exp.nvidia.ngram_embedding  # noqa: F401
+print("native engram modules import OK")' 2>&1)"; then
+    echo "ERROR: image $IMAGE lacks the native Engram/PLE CPU-offload path" >&2
+    echo "       (needs vLLM >= #54371, merged 2026-09-09, or a refactor that" >&2
+    echo "       moved these modules — check the probe output below)." >&2
+    printf '%s\n' "$probe_out" | tail -n 5 >&2
+    exit 1
+  fi
+else
 if ! probe_out="$(docker run --rm -i --entrypoint python3 "${PATCH_MOUNTS[@]}" "$IMAGE" - <<'PYEOF' 2>&1
 import importlib, inspect, sys
 bad = []
@@ -240,6 +305,7 @@ PYEOF
   echo "       python3.12) or a patch file lost its marker. See patches/README.md." >&2
   exit 1
 fi
+fi
 
 docker rm -f "$NAME" >/dev/null 2>&1 || true
 for v in "$NAME-triton-cache" "$NAME-inductor-cache" "$NAME-vllm-cache"; do
@@ -253,7 +319,7 @@ docker run -d --name "$NAME" \
   -p "${BIND}:${PORT}:${PORT}" \
   -v "$MODEL:/model:ro" \
   "${PATCH_MOUNTS[@]}" \
-  -e VLLM_SKIP_WARMUP_KERNELS=1 \
+  "${SKIPWARM_ENV[@]}" \
   -v "${NAME}-vllm-cache:/root/.cache/vllm" \
   -v "${NAME}-triton-cache:/root/.triton" \
   -v "${NAME}-inductor-cache:/tmp/torchinductor_root" \
