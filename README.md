@@ -51,7 +51,7 @@ Qwen4. The NVFP4 checkpoint (`nvidia/Qwen3.8-Flash-Next-NVFP4`, on HF since
 tensors are carried byte-for-byte from `Qwen3.8-Flash-Next-FP8`) puts
 ~63 GiB of weights land on each card during load; at steady state
 ~38.8 GiB of weights + non-torch stays on-card (the ~23.8 GiB PLE shard
-pins to host RAM), leaving **26.4 GiB of KV per card = 2,112,392 tokens**
+pins to host RAM), leaving **26.5 GiB of KV per card = 2,112,392 tokens**
 for the pool.
 
 ## Hardware we validated on
