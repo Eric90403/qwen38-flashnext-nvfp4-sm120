@@ -47,7 +47,7 @@ with only ~6B active parameters per token — a hybrid of Gated DeltaNet and
 QSA attention layers, plus two unusual satellites: a **51B n-gram embedding
 table (PLE)** and a **4B MTP draft head**. It is the architecture preview of
 Qwen4. The NVFP4 checkpoint (`nvidia/Qwen3.8-Flash-Next-NVFP4`, on HF since
-2026-08-31, quantized with NVIDIA Model Optimizer v0.46.0; the PLE and MTP
+2026-09-02, quantized with NVIDIA Model Optimizer v0.46.0; the PLE and MTP
 tensors are carried byte-for-byte from `Qwen3.8-Flash-Next-FP8`) puts
 ~63 GiB of weights land on each card during load; at steady state
 ~38.8 GiB of weights + non-torch stays on-card (the ~23.8 GiB PLE shard
