@@ -7,9 +7,17 @@
 # Checks and why each requirement exists:
 #   1. nvidia-smi present, >=2 CUDA GPUs
 #      The recipe runs tensor-parallel size 2; it needs two visible GPUs.
-#   2. Total VRAM >= 140 GiB, each GPU >= 70 GiB
-#      NVFP4 weights plus the 512K-token KV cache do not fit in less; both
-#      shards must also fit on their own GPU (no cross-GPU spilling).
+#   2. Per-GPU VRAM >= 52 GiB (derived), total across GPUs >= 104 GiB
+#      The floor is computed from this recipe's measured per-card memory
+#      split (live vLLM startup log, gpu_worker.py:879, 2026-09-25):
+#      38.8 GiB weights + non-torch (the ~23.8 GiB PLE shard pins to
+#      host RAM), ~1.7 GiB activation/graphs, 6.6 GiB KV for ONE full
+#      524,288-token window, ~2 GiB prefill-indexer headroom (the
+#      0.97-OOM finding) = 49.1 GiB at GMU 0.94 -> 52 GiB card floor.
+#      Below the floor the recipe cannot hold even one full window.
+#      At/above the floor the check prints the PROJECTED KV pool and
+#      full-context concurrency from that split; the reference 71.7 GiB
+#      card projects 26.9 GiB vs 26.5 GiB measured (2,118,489 tokens).
 #   3. Compute capability == 12.0 (sm_120)
 #      Kernels and patches were validated on sm_120 only; other archs may
 #      run but are untested, so a mismatch is a WARN, not a FAIL.
@@ -50,8 +58,8 @@ gib() { awk -v m="$1" 'BEGIN { printf "%.1f", m / 1024 }'; }   # MiB -> GiB
 # --- 1-4: NVIDIA GPU checks ---------------------------------------------------
 if ! command -v nvidia-smi >/dev/null 2>&1; then
     fail gpu_count 'nvidia-smi not found (tool present, >=2 CUDA GPUs)'
-    fail total_vram 'nvidia-smi not found (>=140 GiB across all GPUs)'
-    fail per_gpu_vram 'nvidia-smi not found (>=70 GiB per GPU)'
+    fail total_vram 'nvidia-smi not found (>=104 GiB across all GPUs)'
+    fail per_gpu_vram 'nvidia-smi not found (>=52 GiB card floor)'
     fail compute_capability 'nvidia-smi not found (expected 12.0 / sm_120)'
     fail driver_version 'nvidia-smi not found (>=570)'
 else
@@ -72,16 +80,25 @@ else
         total_mib="$(printf '%s\n' "$gpu_rows" | awk -F',' '{gsub(/ /,"",$5); s+=$5} END {printf "%.0f", s}')"
         min_mib="$(printf '%s\n' "$gpu_rows" | awk -F',' '{gsub(/ /,"",$5)} NR==1 || $5+0<m+0 {m=$5} END {print m+0}')"
 
-        if awk -v t="$total_mib" 'BEGIN { exit !(t >= 143360) }'; then   # 140 GiB in MiB
-            pass total_vram "$(gib "$total_mib") GiB across ${gpu_count} GPUs (>=140 GiB total)"
+        # Derived from this recipe's measured per-card memory split (header,
+        # check 2): GMU-0.94 envelope must hold consumed 38.78 + act/graphs
+        # 1.62 + one 524,288-token window 6.56 + ~2 GiB prefill-indexer
+        # headroom = 49.0 GiB -> 52 GiB card floor (49.0 / 0.94 = 52.1).
+        # KV density measured on the reference card: 2,118,489 tokens /
+        # 26.51 GiB = 79,913 tokens per GiB of KV.
+        if awk -v t="$total_mib" 'BEGIN { exit !(t >= 106496) }'; then   # 104 GiB in MiB
+            pass total_vram "$(gib "$total_mib") GiB across ${gpu_count} GPUs (>=104 GiB total = 2x the 52 GiB card floor)"
         else
-            fail total_vram "$(gib "$total_mib") GiB across ${gpu_count} GPUs (>=140 GiB total)"
+            fail total_vram "$(gib "$total_mib") GiB across ${gpu_count} GPUs (>=104 GiB total = 2x the 52 GiB card floor)"
         fi
 
-        if awk -v m="$min_mib" 'BEGIN { exit !(m >= 71680) }'; then      # 70 GiB in MiB
-            pass per_gpu_vram "smallest GPU $(gib "$min_mib") GiB (>=70 GiB per GPU)"
+        if awk -v m="$min_mib" 'BEGIN { exit !(m >= 53248) }'; then      # 52 GiB in MiB
+            kv_gib="$(awk -v m="$min_mib" 'BEGIN { printf "%.1f", 0.94 * (m / 1024) - 40.34 }')"
+            kv_tok="$(awk -v k="$kv_gib" 'BEGIN { printf "%d", k * 79913 }')"
+            conc="$(awk -v k="$kv_tok" 'BEGIN { printf "%d", int(k / 524288) }')"
+            pass per_gpu_vram "smallest GPU $(gib "$min_mib") GiB (>=52 GiB floor; projected at GMU 0.94: KV ${kv_gib} GiB ~ ${kv_tok} tokens ~ ${conc} full-524,288 request(s); reference card measures 26.5 GiB / 2,118,489 / 4)"
         else
-            fail per_gpu_vram "smallest GPU $(gib "$min_mib") GiB (>=70 GiB per GPU)"
+            fail per_gpu_vram "smallest GPU $(gib "$min_mib") GiB (>=52 GiB card floor: consumed 38.8 + activation/graphs 1.6 + one full 524,288-token window 6.6 + ~2 GiB indexer headroom, at GMU 0.94)"
         fi
 
         caps="$(printf '%s\n' "$gpu_rows" | awk -F',' '{gsub(/^ +| +$/,"",$4); print $4}' | sort -u | paste -sd ';')"

@@ -62,7 +62,18 @@ two files above, nothing else.
 2. If the upstream diff touches our edited regions (or the edited lines
    moved), re-apply the two edits by hand and re-run the validation matrix
    in the top-level README before trusting the tag.
+   The launcher also asserts at boot — before touching any running
+   container — that the image's own interpreter imports both modules WITH
+   the `TRX50 patch` markers. A moved dist-packages path (the mounts
+   hardcode python3.12) fails the launch instead of silently serving
+   unpatched code. That closes the mount-effectiveness gap only: it
+   proves the mount took, NOT that the content is fresh — a newer
+   upstream fix inside a module we override is still silently reverted by
+   our stale copy, so the re-diff above stays mandatory on every bump.
 3. If upstream ever merges the pinned-direct allocation or a PLE-safe
-   warmup (watch PR #54371-adjacent work and #55313/#55513 for MTP),
+   warmup (watch PR #54371-adjacent work; for MTP, #55513 — block FP8
+   MTP fix for ModelOpt checkpoints — merged 2026-09-08, and Qwen4Exp
+   MTP fixes remain open, e.g. #56742; the old "#55313" reference was
+   wrong, that PR does not exist),
    **delete the corresponding patch** and drop its bind mount — these
    files exist to work around upstream gaps, not to own them.

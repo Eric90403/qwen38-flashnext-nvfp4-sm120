@@ -43,9 +43,12 @@ set -euo pipefail
 #     2026-09-25. The old "#55313/#55513 needed" note was wrong: #55313
 #     does not exist. Revalidate on a bumped image before enabling.
 #     MTP=1 keeps the switch ready for that day (~2.5 GiB/GPU cost).
-#   * VRAM/GPU: ~63.4 GiB weights; KV gets ~28 GiB = 2,118,489 tokens
-#     (live /metrics 2026-09-25, GPU_UTIL=0.94) = 4.03 concurrent
-#     full-524288 requests.
+#   * VRAM/GPU at steady state (live startup log, gpu_worker.py:879):
+#     38.8 GiB weights + non-torch (the ~23.8 GiB PLE shard pins to host
+#     RAM), ~1.6 GiB peak activation, 0.06 GiB CUDA graphs, KV 26.5 GiB
+#     = 2,118,489 tokens (GPU_UTIL=0.94; vLLM logs "Maximum concurrency
+#     for 524,288 tokens per request: 4.04x"). Checkpoint on disk:
+#     123.57 GiB across 11 shards.
 #   * Triton/inductor caches persisted in named volumes: any JIT is paid
 #     once across container recreation.
 
@@ -188,6 +191,45 @@ if [[ "${DRY_RUN}" == "1" ]]; then
 fi
 
 # --- (re)start ---------------------------------------------------------------
+# PATCH_MOUNTS is the single source of truth for the two bind mounts —
+# used first by the assertion probe below, then by the real launch. The
+# target paths hardcode the image's python3.12 dist-packages layout.
+PATCH_MOUNTS=(
+  -v "$PATCH_DIR/uva.py:/usr/local/lib/python3.12/dist-packages/vllm/model_executor/offloader/uva.py:ro"
+  -v "$PATCH_DIR/gpu_worker.py:/usr/local/lib/python3.12/dist-packages/vllm/v1/worker/gpu_worker.py:ro"
+)
+if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
+  echo "ERROR: image $IMAGE is not present locally — docker pull it first" >&2
+  echo "       (the launcher never pulls; see preflight.sh check 8)." >&2
+  exit 1
+fi
+# Boot-time patch assertion: prove the image's OWN interpreter imports
+# both modules WITH the "TRX50 patch" markers, BEFORE touching the
+# running container. A moved dist-packages path (image bump) or a lost
+# mount then fails the launch here instead of silently serving unpatched
+# code — which on this recipe means host OOM at load (uva.py) or the
+# 40-minute warmup wedge (gpu_worker.py). This proves the mounts are
+# EFFECTIVE, not that their content is fresh; on every image bump the
+# re-diff in ../patches/README.md remains mandatory.
+if ! probe_out="$(docker run --rm -i --entrypoint python3 "${PATCH_MOUNTS[@]}" "$IMAGE" - <<'PYEOF' 2>&1
+import importlib, inspect, sys
+bad = []
+for mod in ("vllm.model_executor.offloader.uva", "vllm.v1.worker.gpu_worker"):
+    f = inspect.getfile(importlib.import_module(mod))
+    if "TRX50 patch" not in open(f).read():
+        bad.append(f)
+if bad:
+    sys.exit("UNPATCHED IMPORT PATHS: " + ", ".join(bad))
+PYEOF
+)"; then
+  echo "ERROR: patch assertion FAILED — the image's interpreter did not" >&2
+  echo "       import uva.py/gpu_worker.py with the TRX50 patch markers:" >&2
+  printf '%s\n' "$probe_out" | tail -n 3 >&2
+  echo "       Most likely the image's python path moved (the mounts hardcode" >&2
+  echo "       python3.12) or a patch file lost its marker. See patches/README.md." >&2
+  exit 1
+fi
+
 docker rm -f "$NAME" >/dev/null 2>&1 || true
 for v in "$NAME-triton-cache" "$NAME-inductor-cache" "$NAME-vllm-cache"; do
   docker volume create "$v" >/dev/null 2>&1 || true
@@ -199,8 +241,7 @@ docker run -d --name "$NAME" \
   --ipc=host \
   -p "${BIND}:${PORT}:${PORT}" \
   -v "$MODEL:/model:ro" \
-  -v "$PATCH_DIR/uva.py:/usr/local/lib/python3.12/dist-packages/vllm/model_executor/offloader/uva.py:ro" \
-  -v "$PATCH_DIR/gpu_worker.py:/usr/local/lib/python3.12/dist-packages/vllm/v1/worker/gpu_worker.py:ro" \
+  "${PATCH_MOUNTS[@]}" \
   -e VLLM_SKIP_WARMUP_KERNELS=1 \
   -v "${NAME}-vllm-cache:/root/.cache/vllm" \
   -v "${NAME}-triton-cache:/root/.triton" \

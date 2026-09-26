@@ -4,7 +4,7 @@
     "2026-09-25 22:13:21 MDT",
     "2026-09-25 22:15:49 MDT"
   ],
-  "note": "median (min-max), n=3 fresh-seed passes",
+  "note": "median (min-max) of 3 fresh-seed passes, n=3 per cell; errored/1-token rows excluded from stats and counted in 'excluded'",
   "tests": [
     {
       "test": "prose ctx~1000",
@@ -103,7 +103,8 @@
     },
     {
       "test": "code  ctx~1000",
-      "n": 3,
+      "n": 2,
+      "excluded": "1 errored/1-token row(s) (ttft null or completion_tokens<=1)",
       "ttft_s": {
         "median": 0.12,
         "min": 0.12,
@@ -115,8 +116,8 @@
         "max": 8944.0
       },
       "decode_tok_s": {
-        "median": 79.7,
-        "min": 8.2,
+        "median": 80.05,
+        "min": 79.7,
         "max": 80.4
       }
     },
@@ -160,12 +161,7 @@
     },
     {
       "test": "concurrency=2 (prose, ctx~8000, 256 tok each)",
-      "n": 3,
-      "wall_s": {
-        "median": 5.22,
-        "min": 5.16,
-        "max": 5.22
-      },
+      "n": 6,
       "aggregate_output_tok_s": {
         "median": 98.1,
         "min": 98.1,
@@ -174,12 +170,7 @@
     },
     {
       "test": "concurrency=3 (prose, ctx~8000, 256 tok each)",
-      "n": 3,
-      "wall_s": {
-        "median": 6.2,
-        "min": 6.18,
-        "max": 6.2
-      },
+      "n": 9,
       "aggregate_output_tok_s": {
         "median": 123.9,
         "min": 123.9,
@@ -188,12 +179,7 @@
     },
     {
       "test": "concurrency=4 (prose, ctx~8000, 256 tok each)",
-      "n": 3,
-      "wall_s": {
-        "median": 7.12,
-        "min": 7.11,
-        "max": 7.15
-      },
+      "n": 12,
       "aggregate_output_tok_s": {
         "median": 143.8,
         "min": 143.2,

@@ -46,7 +46,9 @@ table (PLE)** and a **4B MTP draft head**. It is the architecture preview of
 Qwen4. The NVFP4 checkpoint (`nvidia/Qwen3.8-Flash-Next-NVFP4`, on HF since
 2026-08-31, quantized with NVIDIA Model Optimizer v0.46.0; the PLE and MTP
 tensors are carried byte-for-byte from `Qwen3.8-Flash-Next-FP8`) puts
-~63.4 GiB of weights on each of two cards.
+~63 GiB of weights land on each card during load; at steady state
+~38.8 GiB of weights + non-torch stays on-card (the ~23.8 GiB PLE shard
+pins to host RAM), leaving **26.5 GiB = 2,118,489 KV tokens per card**.
 
 ## Hardware we validated on
 
@@ -127,7 +129,7 @@ Plus container env: `-e VLLM_ALLOW_LONG_MAX_MODEL_LEN=1`,
 | `--distributed-executor-backend mp` | Multiproc TP on sm_120 workstation cards | — (Ray backend works but adds nothing here) |
 | `VLLM_SKIP_WARMUP_KERNELS=1` + `patches/gpu_worker.py` | The V2 runner's `warmup_kernels` runs a forward pass **without PLE inputs**, which spins the PLE custom op. The patch makes the skip flag effective so the first *real* request exercises the path. **Scope caveat:** skipping `warmup_kernels()` is a workaround validated on this exact hardware/model/build combination — it is NOT a general-purpose safety measure, and on other models or GPUs it may skip genuinely needed warmup (graph capture, autotuning). If you run this repo on anything else, re-validate from a clean boot first | 40+ minute hang during startup, GPU pegged at ~100 W |
 | `--hf-overrides` YaRN **nested under `text_config`** + `VLLM_ALLOW_LONG_MAX_MODEL_LEN=1` | 524288 = 2× the native 262144 window; Qwen's own card prescribes YaRN factor 2.0. The nesting is mandatory — **top-level `rope_parameters` is a silent no-op** in vLLM's `_apply_dict_overrides` for qwen4_exp (fix originally noted by MiaAI-Lab) | Silent no-op: you believe you have YaRN, you have the 262K window, and long-context quality is quietly wrong |
-| `--gpu-memory-utilization 0.94` `--max-num-seqs 4` | 63.4 GiB weights; KV gets the rest: **2,118,489 tokens** (live `/metrics`, 2026-09-25) — **4 concurrent full-length requests verified live**: four simultaneous ~515K-token prompts (2,059,209 prompt tokens at once = 97.3% of the pool) all completed, see `benchmarks/bench-fullctx-conc.json`. 0.94, not higher: a **fresh ~512K prefill OOMs at 0.97** — the QSA prefill indexer needs ~2 GB of activation headroom beyond steady state; at 0.97 rank 1 died mid-prefill (512 MiB alloc failure, 491 MiB free) and rank 0 spun at 100% waiting for its dead peer | At 0.97: single 500K-token prompt bricks the server; other in-flight requests hang forever behind the dead rank |
+| `--gpu-memory-utilization 0.94` `--max-num-seqs 4` | Steady state per card (vLLM startup log): 38.8 GiB weights + non-torch (PLE shard pinned in host RAM), 1.6 GiB activation/graphs, **26.5 GiB KV = 2,118,489 tokens** — **4 concurrent full-length requests verified live**: four simultaneous ~515K-token prompts (2,059,209 prompt tokens at once = 97.3% of the pool) all completed, see `benchmarks/bench-fullctx-conc.json`. 0.94, not higher: a **fresh ~512K prefill OOMs at 0.97** — the QSA prefill indexer needs ~2 GB of activation headroom beyond steady state; at 0.97 rank 1 died mid-prefill (512 MiB alloc failure, 491 MiB free) and rank 0 spun at 100% waiting for its dead peer | At 0.97: single 500K-token prompt bricks the server; other in-flight requests hang forever behind the dead rank |
 | `--no-enable-flashinfer-autotune` | Avoids first-request autotune stalls on SM120 where FlashInfer AOT cubins already cover this checkpoint's shapes | Long, unpredictable first requests |
 | `--quantization modelopt` + `--trust-remote-code` | NVFP4 via NVIDIA Model Optimizer's quant config (checkpoint ships `hf_quant_config.json`); qwen4_exp modeling code ships with the checkpoint | Refuses to load / wrong kernels |
 
@@ -225,6 +227,10 @@ end-to-end output throughput **including prefill/TTFT**):**
 | 3 | 123.9 (123.9–124.3) | 48–66 | 6.2 s |
 | 4 | **143.8 (143.2–144.0)** | 41–64 | 7.12 s |
 
+*(Ranges are n=3 fresh-seed passes; one `code ctx~1000` pass errored —
+the known 1-token reasoning-parser artifact — and is excluded from stats
+and counted in `bench-median.json` rather than shown as a range floor.)*
+
 Throughput scales sub-linearly (batching amortizes the MoE weight reads);
 per-stream rate at c=4 is still a comfortable 41–64 tok/s.
 
@@ -291,6 +297,7 @@ benchmarks/bench-code-long.py               fixed 2048-token sustained-generatio
 benchmarks/bench-fullctx-conc.py            full-window boundary + 4-way full-context concurrency proof
 benchmarks/bench-natural.py                 natural-English (Gutenberg corpus) long-context lane
 benchmarks/corpus/                          corpus fetch script + provenance (corpus.txt itself is gitignored)
+benchmarks/bench-median.py                 median-of-3 aggregation (excludes errored rows, counts them)
 benchmarks/bench-median.json                median (min-max) of 3 fresh-seed passes for the headline cells
 benchmarks/runs-prose-{1,2,3}.json          the raw passes behind the medians
 benchmarks/bench-results.json               the original 2026-09-25 single-run reference
@@ -330,5 +337,5 @@ benchmarks/evalplus-humaneval/              HumanEval+ samples + eval configurat
 - **Unsloth** — GGUF lane and documentation that made the fallback real.
 
 *Disclaimers: performance varies with driver, nightly build, and prompt mix —
-our numbers are dated 2026-09-22 on the commit above. Nothing here is
+our numbers are dated 2026-09-25 on the commit above. Nothing here is
 affiliated with or endorsed by Qwen, NVIDIA, or Nous Research.*
