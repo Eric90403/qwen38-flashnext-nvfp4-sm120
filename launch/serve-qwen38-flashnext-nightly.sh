@@ -61,7 +61,7 @@ fi
 #     time autotune block clones the full 47.7 GiB PLE table as a constant
 #     -> OOM (PR #55272 discussion; first documented on 2x DGX Spark by
 #     tonyd2wild). Mode 0 never enters inductor; CUDA graphs still capture
-#     decode (24.9 -> 72.5 tok/s). Do not add --enforce-eager.
+#     decode (eager-vs-graphs A/B measured early in development, ~3x). Do not add --enforce-eager.
 #   * Warmup wedge (NATIVE=0 only): the V2 runner's warmup_kernels runs a
 #     forward WITHOUT prepared PLE inputs, and the qwen4_exp PLE op spins
 #     forever on sm_120 (40+ min startup wedge at ~100 W). patches/gpu_worker.py
@@ -76,7 +76,10 @@ fi
 #   * gdn_prefill_backend left auto -> FlashInfer prefill (AOT cubins,
 #     head_k_dim=128 satisfied by this checkpoint).
 #   * KV is BF16 (nightly QSA allowlist: auto|bfloat16 — no FP8 KV).
-#   * MTP off: NOT validated on this pinned build (image 2026-09-05,
+#   * MTP: validated on the native Sep-26 nightly (README: 3-pass prose+code
+#     sweep 2026-09-26, acceptance 42% of drafted tokens; multi-stream numbers
+#     in runs-conc3-mtp-2026-09-26.json). NOT validated on the legacy Sep-5
+#     pinned build (image 2026-09-05,
 #     commit e962733). Upstream has moved since the pin — #55513 (block
 #     FP8 MTP fix for ModelOpt checkpoints) merged 2026-09-08, and the
 #     Qwen4Exp-specific MTP fixes are still open (e.g. #56742) as of
