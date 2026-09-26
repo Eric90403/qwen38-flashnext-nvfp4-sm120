@@ -418,5 +418,6 @@ benchmarks/evalplus-humaneval/              HumanEval+ samples + eval configurat
 - **Unsloth** — GGUF lane and documentation that made the fallback real.
 
 *Disclaimers: performance varies with driver, nightly build, and prompt mix —
-our numbers are dated 2026-09-25 on the commit above. Nothing here is
+our numbers are dated 2026-09-25 (legacy build, `e962733e0`) and
+2026-09-26 (native build, `gddd6fbca1`). Nothing here is
 affiliated with or endorsed by Qwen, NVIDIA, or Nous Research.*
