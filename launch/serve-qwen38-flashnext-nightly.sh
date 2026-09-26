@@ -60,7 +60,7 @@ fi
 #   * --compilation-config mode 0 + FULL_DECODE_ONLY: inductor's compile-
 #     time autotune block clones the full 47.7 GiB PLE table as a constant
 #     -> OOM (PR #55272 discussion; first documented on 2x DGX Spark by
-#     tonyd615). Mode 0 never enters inductor; CUDA graphs still capture
+#     tonyd2wild). Mode 0 never enters inductor; CUDA graphs still capture
 #     decode (24.9 -> 72.5 tok/s). Do not add --enforce-eager.
 #   * Warmup wedge (NATIVE=0 only): the V2 runner's warmup_kernels runs a
 #     forward WITHOUT prepared PLE inputs, and the qwen4_exp PLE op spins
