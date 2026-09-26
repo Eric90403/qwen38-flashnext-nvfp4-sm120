@@ -157,6 +157,16 @@ if [[ -n "${MAX_BT}" ]]; then
   args+=(--max-num-batched-tokens "$MAX_BT")
 fi
 
+# CTX=524288 needs the long-max-model-len override; 262144 is native and
+# must NOT carry it. Built as an array so docker run sees -e + value as
+# two properly quoted words (a bare $() expansion here once parsed the
+# env var as an image name and aborted the launch). Defined before the
+# DRY_RUN block so dry-run output reflects the real launch.
+LONG_LEN=()
+if [[ "$CTX" == "524288" ]]; then
+  LONG_LEN=(-e VLLM_ALLOW_LONG_MAX_MODEL_LEN=1)
+fi
+
 # --- network + security gating ------------------------------------------------
 if [[ "${PUBLISH}" == "1" ]]; then
   BIND="0.0.0.0"
@@ -172,6 +182,7 @@ fi
 if [[ "${DRY_RUN}" == "1" ]]; then
   echo "# DRY_RUN: would execute the following (no side effects performed):"
   echo "BIND=${BIND} CTX=${CTX} (rope args: ${ROPE_ARGS[*]:-none}) IMAGE=${IMAGE}"
+  echo "long-max-model-len env: ${LONG_LEN[*]:-none}"
   echo "docker rm -f ${NAME}   (skipped in DRY_RUN)"
   echo "docker run -d --name ${NAME} \\"
   echo "  ${VOL_ARGS[*]} ${DEV_ARGS[*]} \\"
@@ -247,7 +258,7 @@ docker run -d --name "$NAME" \
   -v "${NAME}-triton-cache:/root/.triton" \
   -v "${NAME}-inductor-cache:/tmp/torchinductor_root" \
   -e NCCL_P2P_DISABLE=1 \
-  $([[ "$CTX" == "524288" ]] && echo -e VLLM_ALLOW_LONG_MAX_MODEL_LEN=1) \
+  "${LONG_LEN[@]}" \
   -e NCCL_DEBUG=WARN \
   -e VLLM_RPC_TIMEOUT=900000 \
   -e VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS=7200 \
