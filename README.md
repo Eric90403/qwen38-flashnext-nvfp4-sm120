@@ -153,6 +153,29 @@ rate = completion tokens / (total − TTFT). Full harness in
 | ~32K | 3.0 s | 10,608 | 80.3 |
 | ~128K | 12.4 s | 10,292 | 79.5 |
 
+**Long code outputs (2,048 tokens ≈ a full module + test suite, chat
+endpoint, thinking disabled, complete graph-library task):**
+
+| Prompt size | TTFT | Prefill tok/s | Decode tok/s |
+|---|---|---|---|
+| ~1K | 0.15 s | 7,927 | 80.1 |
+| ~32K | 3.0 s | 10,814 | 79.7 |
+| ~128K | 12.4 s | 10,373 | 78.6 |
+| **~500K** | **55.1 s** | **9,082** | **77.6** |
+
+Long-output **concurrency** (2,048-token generations, ~32K context):
+
+| Streams | Aggregate decode | Per-stream decode | Wall time |
+|---|---|---|---|
+| 1 | 71.1 | 79.5 | 28.8 s |
+| 2 | 115.0 | 64–69 | 35.6 s |
+| 3 | 150.9 | 55–65 | 40.7 s |
+| 4 | **181.7** | 50–62 | 45.1 s |
+
+(Concurrency decode rates are lower than the 256-token case because each
+stream runs for the full 2,048 tokens — the batch never drains to
+single-stream speedups.)
+
 Decode speed is essentially flat from 1K to 500K context (≈79–81 tok/s) —
 context length costs prefill time, not generation speed. Prefill holds
 ~10K tok/s to 128K and drops only ~13% at the 500K extreme.
@@ -214,8 +237,11 @@ launch/serve-qwen38-flashnext-nightly.sh    the launcher (validated as-is; MODEL
 patches/uva.py                              pinned-direct UVA offloader -> vllm/model_executor/offloader/uva.py
 patches/gpu_worker.py                       warmup_kernels skip -> vllm/v1/worker/gpu_worker.py
 patches/README.md                           exact vLLM commit the patches were cut against; re-diff procedure; deletion criteria
-benchmarks/bench.py                         the benchmark harness (per-request-seeded filler; defeats prefix caching)
+benchmarks/bench.py                         benchmark harness, completions endpoint (per-request-seeded filler; defeats prefix caching)
+benchmarks/bench-code-long.py               long-output (2048-token) code bench, chat endpoint, thinking disabled
 benchmarks/bench-results.json               raw output of the 2026-09-25 run behind the tables above
+benchmarks/bench-code-long.json             raw output of the long-output code run
+benchmarks/bench-run-2026-09-25.log         console log of the main run
 ```
 
 ## Credits
