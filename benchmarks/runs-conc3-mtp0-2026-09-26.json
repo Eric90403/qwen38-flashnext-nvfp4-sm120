@@ -1,0 +1,41 @@
+{
+ "test": "3-way full-context concurrency on MTP=0 (~515K each, 256 out)",
+ "server": "MTP=0, native nightly gddd6fbca1",
+ "kv_pool_tokens": 2112392,
+ "per_stream": [
+  {
+   "ctx_requested": 515000,
+   "prompt_tokens": 515008,
+   "completion_tokens": 256,
+   "finish_reason": "length",
+   "ttft_s": 104.65,
+   "total_s": 160.2,
+   "prefill_tok_s": 4921.0,
+   "decode_tok_s": 4.6
+  },
+  {
+   "ctx_requested": 515000,
+   "prompt_tokens": 515033,
+   "completion_tokens": 256,
+   "finish_reason": "length",
+   "ttft_s": 51.29,
+   "total_s": 159.3,
+   "prefill_tok_s": 10041.0,
+   "decode_tok_s": 2.4
+  },
+  {
+   "ctx_requested": 515000,
+   "prompt_tokens": 515411,
+   "completion_tokens": 256,
+   "finish_reason": "length",
+   "ttft_s": 157.6,
+   "total_s": 160.92,
+   "prefill_tok_s": 3270.0,
+   "decode_tok_s": 77.3
+  }
+ ],
+ "wall_s": 160.98,
+ "aggregate_output_tok_s": 4.8,
+ "sum_prompt_tokens": 1545452,
+ "pool_utilization_pct": 73.2
+}

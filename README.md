@@ -155,7 +155,29 @@ drops 4.03× → 3.32× — **the four-concurrent-full-length claim needs
 speculation-dependent, but we checked). Some Qwen4Exp-specific MTP fixes are
 still open upstream (e.g. #56742) as of 2026-09-25. (The old
 "needs #55313/#55513" note in earlier revisions was wrong — #55313 does not
-exist.) Multi-stream effect on aggregate throughput is not yet measured.
+exist.)
+
+**MTP under multi-stream full-context load (2026-09-26, measured).** Three
+simultaneous ~515K-token requests, 256 output each, identical seeds, MTP=1
+vs MTP=0 on the same native build:
+
+| | MTP=1 (pool 1,739,614) | MTP=0 (pool 2,112,392) |
+|---|---|---|
+| All 3 complete | yes | yes |
+| Wall clock | 168.7 s | **161.0 s** |
+| Pool occupancy | 88.8% | 73.2% |
+| Last-stream decode (alone at the tail) | **121.2 tok/s** | 77.3 tok/s |
+| Draft acceptance under load | 36% (399/1,101) | — |
+
+Reading: with short outputs this workload is **prefill-bound**, so MTP buys
+no wall-clock (it costs ~5% — speculator overhead on 256-token segments
+while chunked prefill dominates the batch). MTP's benefit appears the
+moment decode dominates — the tail stream finishing alone decoded at 121
+vs 77 tok/s (+57%), matching the single-stream 133–176 vs 91–94 numbers.
+Choose by workload: long generations → MTP=1; many short-output
+full-context lookups → MTP=0. Raw data:
+`benchmarks/runs-conc3-mtp-2026-09-26.json`,
+`benchmarks/runs-conc3-mtp0-2026-09-26.json`.
 
 ## Measured performance
 

@@ -1,0 +1,46 @@
+{
+ "test": "3-way full-context concurrency on MTP=1 (~515K each, 256 out)",
+ "server": "MTP=1, native nightly gddd6fbca1",
+ "kv_pool_tokens": 1739614,
+ "per_stream": [
+  {
+   "ctx_requested": 515000,
+   "prompt_tokens": 514415,
+   "completion_tokens": 256,
+   "finish_reason": "length",
+   "ttft_s": 52.75,
+   "total_s": 165.35,
+   "prefill_tok_s": 9752.0,
+   "decode_tok_s": 2.3
+  },
+  {
+   "ctx_requested": 515000,
+   "prompt_tokens": 514923,
+   "completion_tokens": 256,
+   "finish_reason": "length",
+   "ttft_s": 109.57,
+   "total_s": 167.55,
+   "prefill_tok_s": 4699.0,
+   "decode_tok_s": 4.4
+  },
+  {
+   "ctx_requested": 515000,
+   "prompt_tokens": 514170,
+   "completion_tokens": 256,
+   "finish_reason": "length",
+   "ttft_s": 166.51,
+   "total_s": 168.63,
+   "prefill_tok_s": 3088.0,
+   "decode_tok_s": 121.2
+  }
+ ],
+ "wall_s": 168.69,
+ "aggregate_output_tok_s": 4.6,
+ "sum_prompt_tokens": 1543508,
+ "pool_utilization_pct": 88.8,
+ "spec_delta": {
+  "spec_decode_num_drafts_total": 367.0,
+  "spec_decode_num_draft_tokens_total": 1101.0,
+  "spec_decode_num_accepted_tokens_total": 399.0
+ }
+}
