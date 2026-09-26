@@ -65,6 +65,10 @@ single card cannot hold the TP2 shards; this is not a TP1 recipe.
 ## Quick start
 
 ```bash
+# 0. Preflight: verify your machine can actually run this (2 GPUs, VRAM,
+#    host RAM, driver, model path, image present).
+./preflight.sh
+
 # 1. Fetch the NVFP4 checkpoint (~124 GB; NVIDIA Open Model License +
 #    Qwen Community License — accept terms, `hf` CLI)
 hf download nvidia/Qwen3.8-Flash-Next-NVFP4 --local-dir ./qwen38-flash-next-nvfp4
@@ -316,7 +320,8 @@ benchmarks/evalplus-humaneval/              HumanEval+ samples + eval configurat
   Dynamo recipe (B200 lane) as prior art.
 - **vLLM project** — nightly `qwen4_exp` support, `UVAOffloader`,
   YaRN plumbing. Relevant PRs: #54371 (PLE CPU offload), #55272 (autotune
-  PLE-clone OOM), #55313 / #55513 (MTP, open).
+  PLE-clone OOM), #55513 (block FP8 MTP fix, merged 2026-09-08 — after
+  our pinned image), #56742 (Qwen4Exp MTP fixes, open).
 - **tonyd2wild** — first documentation of the inductor PLE-table-clone OOM on
   2× DGX Spark; our mode-0 workaround stands on that finding.
 - **MiaAI-Lab** — documented that `rope_parameters` must nest under
