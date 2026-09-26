@@ -137,7 +137,7 @@ bind-mounted patch files, and `-e VLLM_SKIP_WARMUP_KERNELS=1`.)
 | `--distributed-executor-backend mp` | Multiproc TP on sm_120 workstation cards | — (Ray backend works but adds nothing here) |
 | *(legacy `NATIVE=0` only)* `VLLM_SKIP_WARMUP_KERNELS=1` + `patches/gpu_worker.py` | The V2 runner's `warmup_kernels` ran a forward pass **without PLE inputs**, spinning the PLE custom op for 40+ min at ~100 W. Upstream fixed this properly (#55146 + #58197: mode-0/eager skips JIT warmup — in every nightly since 2026-09-22), so `NATIVE=1` needs neither the flag nor the patch | On the legacy build: 40+ minute hang during startup, GPU pegged at ~100 W |
 | `--hf-overrides` YaRN **nested under `text_config`** + `VLLM_ALLOW_LONG_MAX_MODEL_LEN=1` | 524288 = 2× the native 262144 window; Qwen's own card prescribes YaRN factor 2.0. The nesting is mandatory — **top-level `rope_parameters` is a silent no-op** in vLLM's `_apply_dict_overrides` for qwen4_exp (fix originally noted by MiaAI-Lab) | Silent no-op: you believe you have YaRN, you have the 262K window, and long-context quality is quietly wrong |
-| `--gpu-memory-utilization 0.94` `--max-num-seqs 4` | Steady state per card (vLLM startup log): 38.8 GiB weights + non-torch (PLE shard pinned in host RAM), 1.6 GiB activation/graphs, **26.5 GiB KV = 2,112,392 tokens** — **4 concurrent full-length requests verified live**: four simultaneous ~515K-token prompts (2,059,947 prompt tokens at once ≈ 97.5% of the pool) all completed on the native build, see `benchmarks/runs-fullctx-native-2026-09-26.json`. 0.94, not higher: a **fresh ~512K prefill OOMs at 0.97** — the QSA prefill indexer needs ~2 GB of activation headroom beyond steady state; at 0.97 rank 1 died mid-prefill (512 MiB alloc failure, 491 MiB free) and rank 0 spun at 100% waiting for its dead peer | At 0.97: single 500K-token prompt bricks the server; other in-flight requests hang forever behind the dead rank |
+| `--gpu-memory-utilization 0.94` `--max-num-seqs 4` | Steady state per card (vLLM startup log): 38.8 GiB weights + non-torch (PLE shard pinned in host RAM), 1.6 GiB activation/graphs, **26.5 GiB KV = 2,112,392 tokens** — **4 concurrent full-length requests verified live**: four simultaneous ~515K-token prompts (2,059,947 prompt tokens = 97.5% of the 2,112,392-token native pool; all four fully resident for the final ~1 s of the run) all completed on the native build, see `benchmarks/runs-fullctx-native-2026-09-26.json`. 0.94, not higher: a **fresh ~512K prefill OOMs at 0.97** — the QSA prefill indexer needs ~2 GB of activation headroom beyond steady state; at 0.97 rank 1 died mid-prefill (512 MiB alloc failure, 491 MiB free) and rank 0 spun at 100% waiting for its dead peer | At 0.97: single 500K-token prompt bricks the server; other in-flight requests hang forever behind the dead rank |
 | `--no-enable-flashinfer-autotune` | Avoids first-request autotune stalls on SM120 where FlashInfer AOT cubins already cover this checkpoint's shapes | Long, unpredictable first requests |
 | `--quantization modelopt` + `--trust-remote-code` | NVFP4 via NVIDIA Model Optimizer's quant config (checkpoint ships `hf_quant_config.json`); qwen4_exp modeling code ships with the checkpoint | Refuses to load / wrong kernels |
 
@@ -204,7 +204,9 @@ in line with the legacy medians (123.9/143.8, `bench-median.json`; the single-ru
 to TTFT serialization in a single pass and is a timing artifact, not a
 regression. Full-context boundary (522K in + 1,024 out, single request):
 TTFT 51.8 s, decode 89.2 tok/s; four simultaneous ~515K requests all
-completed, wall 215.8 s (~97.5% of the 2,112,392-token pool). 524K needle
+completed, wall 215.8 s; 2,059,947 prompt tokens = 97.5% of the
+2,112,392-token native pool, with all four prompts co-resident for the
+final ~1 s (last TTFT 212.3 s, first completion 213.2 s). 524K needle
 recall 3/3 at 25/50/90% depth (MTP=0) and correct at 50% with MTP=1.
 (Honest raw-data note: one `code ~128K` row of the native sweep shows
 `completion_tokens: 1` — an early-EOS artifact at temp 0.7, reproduced
@@ -316,7 +318,7 @@ per-stream rate at c=4 is still a comfortable 41–64 tok/s.
 | **HumanEval+ pass@1 (EvalPlus, greedy, thinking off)** | **0.945 base / 0.921+** — 164/164 problems, sandboxed evaluation |
 | Cold start | ~8 min (JIT caches in named Docker volumes make restarts fast) |
 | Long-context recall | YaRN 2.0 needle tests 3/3 correct at 25% / 50% / 90% depth (2026-09-22; re-verified 3/3 on the native build 2026-09-26, plus 1/1 at 50% depth with MTP=1) |
-| KV pool (GMU 0.94) | 2,112,392 tokens — 4 concurrent full-context requests **verified live** (four ~515K prompts, ~97.5% occupancy, `runs-fullctx-native-2026-09-26.json`) |
+| KV pool (GMU 0.94) | 2,112,392 tokens — 4 concurrent full-context requests **verified live** (four ~515K prompts, 97.5% of native pool; all four resident for the final ~1 s, `runs-fullctx-native-2026-09-26.json`) |
 | Full-window boundary | single request: 521,681-token prompt + 1,024 output — TTFT 51.8 s, 89.2 tok/s (native build; legacy was 55.7 s / 77.4 tok/s, `bench-fullctx-conc.json`) |
 
 Eval configuration: [EvalPlus](https://github.com/evalplus/evalplus) `--backend openai`
