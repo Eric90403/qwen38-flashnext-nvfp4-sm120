@@ -101,7 +101,9 @@ block exists because our host deliberately doesn't run the toolkit hook.
 image's own Engram/PLE modules import before launching. `NATIVE=0` restores
 the September-5 pinned build with the two historical bind-mounted files in
 `patches/` — kept for rollback and for anyone who cannot bump images; the
-launcher refuses to pair a mode with the wrong image. See `patches/README.md`
+launcher refuses to pair a mode with the wrong image. The Sep-5 image is
+not pulled automatically; if `docker image inspect` can't find its digest,
+`docker pull` it by digest before using `NATIVE=0`. See `patches/README.md`
 for what each patch did and which upstream PR replaced it.
 
 ## The flags, and why each one is load-bearing
