@@ -201,8 +201,8 @@ The native offload path (#54371 + #56926 serialized huge-page host tables)
 decodes ~15% faster than the patched build at every context length, and
 single-stream MTP lifts decode ~40–60% over MTP=0 (2026-09-26 3-pass sweep:
 131–150 tok/s; see the MTP note above for the KV-pool cost). Code lane,
-MTP=0: 93.3 / 92.2 / 91.3–91.5
-(1K/32K/128K). Concurrency (MTP=0): c=3 140.3 and c=4 141.5 aggregate —
+MTP=0: 93.3 / 92.2 / 91.0–93.7
+(1K/32K/128K, the 128K a 3-pass retest median of 91.6). Concurrency (MTP=0): c=3 140.3 and c=4 141.5 aggregate —
 in line with the legacy medians (123.9/143.8, `bench-median.json`; the single-run reference measured 125.8/145.6, `bench-results.json`); the c=2 pass measured 79.8 due
 to TTFT serialization in a single pass and is a timing artifact, not a
 regression. Full-context boundary (522K in + 1,024 out, single request):
@@ -213,7 +213,7 @@ final ~1 s (last TTFT 212.3 s, first completion 213.2 s). 524K needle
 recall 3/3 at 25/50/90% depth (MTP=0) and correct at 50% with MTP=1.
 (Honest raw-data note: one `code ~128K` row of the native sweep shows
 `completion_tokens: 1` — an early-EOS artifact at temp 0.7, reproduced
-neither before nor after; clean retests at that cell ran 91.3–91.5 tok/s.)
+neither before nor after; 3 clean retest passes at that cell ran 91.0–93.7 tok/s, median 91.6 — rows appended to `runs-native-ple-2026-09-26.json`.)
 
 **Legacy patched build — `e962733e0` (2026-09-25; headline cells are
 median of 3 passes, range in `benchmarks/bench-median.json`).** Kept for
