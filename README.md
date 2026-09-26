@@ -61,8 +61,8 @@ for the pool.
 | GPU | 2× NVIDIA RTX PRO 5000 Blackwell 72GB (sm_120), no NVLink (`nvidia-smi topo -m`: `NODE`) |
 | CPU / RAM | AMD Threadripper PRO on a TRX50-class platform, 125 GB DDR5 |
 | Host driver | 595.91.07 (Ubuntu) |
-| Serving | Docker, `vllm/vllm-openai:nightly` — vLLM `0.28.1rc1.dev437+ge962733e0` (upstream commit [`e962733`](https://github.com/vllm-project/vllm/commit/e962733e0), image pulled digest `sha256:89dd8f44…`, image built 2026-09-05), container torch 2.13.0+cu130 |
-| Validated | 2026-09-22, end-to-end |
+| Serving (default, `NATIVE=1`) | Docker, `vllm/vllm-openai:nightly` pinned by digest `sha256:1b88c3af…` — vLLM `0.30.1rc1.dev193+gddd6fbca1` (image built 2026-09-26), zero patches, container torch 2.13.0+cu130. Validated 2026-09-26, end-to-end. |
+| Serving (legacy, `NATIVE=0`) | vLLM `0.28.1rc1.dev437+ge962733e0` (upstream commit [`e962733`](https://github.com/vllm-project/vllm/commit/e962733e0), image digest `sha256:89dd8f44…`, image built 2026-09-05) + the two `patches/` files. Validated 2026-09-22, end-to-end. |
 
 Requirements that are hard: **≥ ~100 GB host RAM** (each rank pins a 23.8 GiB
 table copy — see the `uva.py` patch) and **two 72 GB Blackwell cards**. A
