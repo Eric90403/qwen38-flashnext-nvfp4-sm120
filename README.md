@@ -382,6 +382,10 @@ benchmarks/bench-natural.py                 natural-English (Gutenberg corpus) l
 benchmarks/corpus/                          corpus fetch script + provenance (corpus.txt itself is gitignored)
 benchmarks/bench-median.py                 median-of-3 aggregation (excludes errored rows, counts them)
 benchmarks/bench-median.json                median (min-max) of 3 fresh-seed passes for the headline cells
+benchmarks/bench-run-2026-09-25.log             console log of the 09-25 sweep
+benchmarks/bench-code-long.log                  console log, long-code bench
+benchmarks/bench-fullctx-conc.log               console log, 4-way proof
+benchmarks/bench-natural.log                    console log, natural lane
 benchmarks/runs-prose-{1,2,3}.json          the raw passes behind the medians
 benchmarks/bench-results.json               the original 2026-09-25 single-run reference
 benchmarks/bench-code-long.json             long-output code run (raw)
