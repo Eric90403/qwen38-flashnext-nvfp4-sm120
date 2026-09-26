@@ -277,12 +277,18 @@ generations, ~32K context:
 stream runs for the full 2,048 tokens — the batch never drains to
 single-stream speedups.)
 
-**Full-context concurrency (the 4-way proof):** four simultaneous
-~515K-token prompts all completed — 2,059,947 prompt tokens held at once,
-~97.5% of the KV pool. Behavior at that occupancy: chunked prefill admits
-streams staggered (TTFTs 57–236 s), and near-full-pool decode batches
-serialize — expect minutes, not seconds, per stream. Raw data:
-`benchmarks/bench-fullctx-conc.json`.
+**Full-context concurrency (legacy build, the 4-way attempt):** four
+simultaneous ~515K-token prompts all completed — 2,059,209 prompt tokens
+(97.3% of the legacy 2,118,489-token pool) submitted at once. Note on
+"held at once": chunked prefill admitted the streams so slowly
+(TTFTs 57–236 s) that the first stream finished at t=118 s while the
+last prompt was still prefilling at t=236 s — four full prompts were
+never simultaneously resident on this build. The native build's rerun
+is the real co-residency proof: all four prompts resident from
+t=212.3 s to t=213.2 s (see the native-build section above and
+`benchmarks/runs-fullctx-native-2026-09-26.json`). Behavior at that
+occupancy: near-full-pool decode batches serialize — expect minutes, not
+seconds, per stream. Raw data: `benchmarks/bench-fullctx-conc.json`.
 
 Decode speed is essentially flat from 1K to 500K context (≈79–81 tok/s) —
 context length costs prefill time, not generation speed. Prefill holds
