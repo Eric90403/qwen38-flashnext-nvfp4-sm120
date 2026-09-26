@@ -7,12 +7,14 @@ Two claims this file settles with measurements (2026-09-25 review):
    that exercises essentially the entire advertised 524,288-token window.
    (The published sweeps topped out at ~500K input.)
 
-2. CONC4: four SIMULTANEOUS ~515K-token requests. The KV pool is
-   2,118,489 tokens, so 4 x (515K + 256 out + template) ~= 2.061M = 97.3%
-   of the pool. If all four complete, "4 concurrent full-length requests"
-   is a measured fact, not a capacity extrapolation. If they don't, the
-   README gets reworded to the honest number and the failure mode gets
-   documented.
+2. CONC4: four SIMULTANEOUS ~515K-token requests. The KV pool size
+   depends on the build (2,118,489 legacy / 2,112,392 native) — read it
+   from the server's /metrics (kv_cache_size_tokens), do not hardcode;
+   KV_POOL_TOKENS env overrides the default. 4 x (515K + 256 out + template)
+   ~= 2.061M = 97.3-97.5% of the pool. If all four complete, "4 concurrent
+   full-length requests" is a measured fact, not a capacity extrapolation.
+   If they don't, the README gets reworded to the honest number and the
+   failure mode gets documented.
 
 Anti-prefix-cache discipline: RUN_BASE is fresh per invocation; every
 request (within and across groups) uses a distinct seed, so no request's
@@ -29,6 +31,7 @@ from concurrent.futures import ThreadPoolExecutor
 BASE = (sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8007").rstrip("/") + "/v1"
 MODEL = "qwen38-flashnext-nvfp4"
 RUN_BASE = random.randrange(10**9)
+KV_POOL_TOKENS = int(__import__("os").environ.get("KV_POOL_TOKENS", "2112392"))
 
 _r = random.Random(20260925)
 SYNTH = ["".join(_r.choices(string.ascii_lowercase, k=_r.randint(3, 9))) for _ in range(4096)]
@@ -107,7 +110,7 @@ def one_chat(ctx_tokens: int, max_tokens: int, seed: int) -> dict:
 def main():
     results = {"started": time.strftime("%Y-%m-%d %H:%M:%S %Z"),
                "endpoint": "chat_completions", "run_base": RUN_BASE,
-               "kv_pool_tokens_expected": 2118489, "tests": []}
+               "kv_pool_tokens_expected": KV_POOL_TOKENS, "tests": []}
 
     # 1) BOUNDARY: ~522K input + 1024 output, single stream.
     seed = RUN_BASE
@@ -131,8 +134,8 @@ def main():
         "wall_s": round(wall, 2),
         "aggregate_output_tok_s": round(agg, 1),
         "sum_prompt_tokens": total_prompt,
-        "kv_pool_tokens_expected": 2118489,
-        "pool_utilization_pct": round(100.0 * (total_prompt + 4 * 256) / 2118489, 1),
+        "kv_pool_tokens_expected": KV_POOL_TOKENS,
+        "pool_utilization_pct": round(100.0 * (total_prompt + 4 * 256) / KV_POOL_TOKENS, 1),
     }
     results["tests"].append(entry)
     print(json.dumps(entry), flush=True)
