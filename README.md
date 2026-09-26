@@ -318,7 +318,7 @@ per-stream rate at c=4 is still a comfortable 41–64 tok/s.
 
 | Other | Value |
 |---|---|
-| **HumanEval+ pass@1 (EvalPlus, greedy, thinking off)** | **0.945 base / 0.921+** — 164/164 problems, sandboxed evaluation |
+| **HumanEval+ pass@1 (EvalPlus, greedy, thinking off)** | **0.945 base / 0.921+** — all 164 HumanEval problems sampled greedily, sandboxed evaluation (samples in `benchmarks/evalplus-humaneval/`) |
 | Cold start | ~8 min (JIT caches in named Docker volumes make restarts fast) |
 | Long-context recall | YaRN 2.0 needle tests 3/3 correct at 25% / 50% / 90% depth (2026-09-22; re-verified 3/3 on the native build 2026-09-26, plus 1/1 at 50% depth with MTP=1) |
 | KV pool (GMU 0.94) | 2,112,392 tokens — 4 concurrent full-context requests **verified live** (four ~515K prompts, 97.5% of native pool; all four resident for the final ~1 s, `runs-fullctx-native-2026-09-26.json`) |
