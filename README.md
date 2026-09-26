@@ -200,7 +200,7 @@ decodes ~15% faster than the patched build at every context length, and
 single-stream MTP roughly doubles it again (133–176 tok/s; see the MTP note
 above for the KV-pool cost). Code lane, MTP=0: 93.3 / 92.2 / 91.3–91.5
 (1K/32K/128K). Concurrency (MTP=0): c=3 140.3 and c=4 141.5 aggregate —
-in line with the legacy medians (126/146); the c=2 pass measured 79.8 due
+in line with the legacy medians (123.9/143.8, `bench-median.json`; the single-run reference measured 125.8/145.6, `bench-results.json`); the c=2 pass measured 79.8 due
 to TTFT serialization in a single pass and is a timing artifact, not a
 regression. Full-context boundary (522K in + 1,024 out, single request):
 TTFT 51.8 s, decode 89.2 tok/s; four simultaneous ~515K requests all
