@@ -346,7 +346,8 @@ parallel KV pool, no concurrent streams. We run vLLM.
   `sudo dmesg -T | grep -i oom`. Pinned pages don't show as anonymous in smaps —
   they hide in a shmem-like category, so process RSS alone misleads you.
 - **V1 runner cannot run qwen4_exp at all** ("PLE inputs were not prepared") —
-  stay on the V2 runner and use the warmup-skip patch.
+  stay on the V2 runner. On the legacy `NATIVE=0` build also keep the
+  warmup-skip patch; the native build needs nothing (upstream #55146/#58197).
 - **One rank at 100% forever, its peer idle = the peer died, this one waits.**
   With multiproc TP, a CUDA OOM in one worker does not fail the request —
   the surviving rank spins on the dead peer's all-reduce forever. Look for
