@@ -3,9 +3,13 @@
 **What this is.** A working, measured single-node deployment of
 [`nvidia/Qwen3.8-Flash-Next-NVFP4`](https://huggingface.co/nvidia/Qwen3.8-Flash-Next-NVFP4)
 on **two workstation Blackwell cards (RTX PRO 5000 72GB, compute capability
-12.0)** using vLLM nightly with tensor parallelism 2 — serving the full
+12.0)** using vLLM with tensor parallelism 2 — serving the full
 **524,288-token context** on 144 GB of VRAM. Threadripper PRO host, 125 GB
-system RAM, no NVLink, Docker.
+system RAM, no NVLink, Docker. We couldn't find another public recipe for
+this exact combination — 2× RTX PRO 5000 72GB + vLLM TP2 + the NVIDIA
+NVFP4 checkpoint + PLE host offload + full 512K context — measured
+end-to-end; the value here is the exact flags, the failure modes they
+prevent, and the raw results.
 
 **Why it's not obvious.** The official recipes for this model assume
 datacenter GPUs (B200, TP4/TP8) or 2× DGX Spark. The community recipes for
@@ -15,7 +19,8 @@ consumer/workstation Blackwell stop short of two things we do here:
    embedding table (PLE) that naively eats ~24 GiB *per GPU* at TP2, leaving
    no KV-cache room past ~395K tokens. We park that table in pinned host RAM
    behind vLLM's UVA zero-copy offloader, which frees ~23.8 GiB/GPU and grows
-   the KV pool to 2,118,489 tokens — 4.03 concurrent full-length requests.
+   the KV pool to 2,118,489 tokens — four concurrent full-length requests,
+   verified live at 97.3% pool occupancy.
 2. **The sm_120 + PCIe TP2 trap field.** vLLM's custom all-reduce deadlocks
    this class of machine; the inductor autotuner OOMs by cloning the PLE
    table; the V2 runner's kernel warmup wedges; and at high
@@ -116,15 +121,19 @@ Plus container env: `-e VLLM_ALLOW_LONG_MAX_MODEL_LEN=1`,
 | `--disable-custom-all-reduce` | vLLM's custom P2P all-reduce **deadlocks on this hardware class** — both ranks spin forever at the first embedding all-reduce, even with `NCCL_P2P_DISABLE=1` (that env var only steers NCCL, not vLLM's custom kernels) | Wedge at ~100 W GPU / 0% mem util, first request never completes. Symptom class: stack parked inside `hyperconnection.py mix` (backpressure *behind* the jammed all-reduce) |
 | `--compilation-config '{"mode":0, "cudagraph_mode":"FULL_DECODE_ONLY"}'` | Mode 0 (no torch.compile/inductor) makes the autotuner's PLE-table-clone OOM unreachable (same failure tonyd615 documented on 2× Spark; vLLM PR #55272), while CUDA graphs still capture decode | Inductor autotune clones the full 47.7 GiB PLE table as a compile-time constant → OOM. Decode without graphs: 24.9 tok/s vs 72.5 with |
 | `--distributed-executor-backend mp` | Multiproc TP on sm_120 workstation cards | — (Ray backend works but adds nothing here) |
-| `VLLM_SKIP_WARMUP_KERNELS=1` + `patches/gpu_worker.py` | The V2 runner's `warmup_kernels` runs a forward pass **without PLE inputs**, which spins the PLE custom op. The patch makes the skip flag effective so the first *real* request exercises the path | 40+ minute hang during startup, GPU pegged at ~100 W |
+| `VLLM_SKIP_WARMUP_KERNELS=1` + `patches/gpu_worker.py` | The V2 runner's `warmup_kernels` runs a forward pass **without PLE inputs**, which spins the PLE custom op. The patch makes the skip flag effective so the first *real* request exercises the path. **Scope caveat:** skipping `warmup_kernels()` is a workaround validated on this exact hardware/model/build combination — it is NOT a general-purpose safety measure, and on other models or GPUs it may skip genuinely needed warmup (graph capture, autotuning). If you run this repo on anything else, re-validate from a clean boot first | 40+ minute hang during startup, GPU pegged at ~100 W |
 | `--hf-overrides` YaRN **nested under `text_config`** + `VLLM_ALLOW_LONG_MAX_MODEL_LEN=1` | 524288 = 2× the native 262144 window; Qwen's own card prescribes YaRN factor 2.0. The nesting is mandatory — **top-level `rope_parameters` is a silent no-op** in vLLM's `_apply_dict_overrides` for qwen4_exp (fix originally noted by MiaAI-Lab) | Silent no-op: you believe you have YaRN, you have the 262K window, and long-context quality is quietly wrong |
-| `--gpu-memory-utilization 0.94` `--max-num-seqs 4` | 63.4 GiB weights; KV gets the rest: **2,118,489 tokens** (live `/metrics`, 2026-09-25) = 4.03 concurrent full-524K requests. 0.94, not higher: a **fresh ~512K prefill OOMs at 0.97** — the QSA prefill indexer needs ~2 GB of activation headroom beyond steady state; at 0.97 rank 1 died mid-prefill (512 MiB alloc failure, 491 MiB free) and rank 0 spun at 100% waiting for its dead peer | At 0.97: single 500K-token prompt bricks the server; other in-flight requests hang forever behind the dead rank |
+| `--gpu-memory-utilization 0.94` `--max-num-seqs 4` | 63.4 GiB weights; KV gets the rest: **2,118,489 tokens** (live `/metrics`, 2026-09-25) — **4 concurrent full-length requests verified live**: four simultaneous ~515K-token prompts (2,059,209 prompt tokens at once = 97.3% of the pool) all completed, see `benchmarks/bench-fullctx-conc.json`. 0.94, not higher: a **fresh ~512K prefill OOMs at 0.97** — the QSA prefill indexer needs ~2 GB of activation headroom beyond steady state; at 0.97 rank 1 died mid-prefill (512 MiB alloc failure, 491 MiB free) and rank 0 spun at 100% waiting for its dead peer | At 0.97: single 500K-token prompt bricks the server; other in-flight requests hang forever behind the dead rank |
 | `--no-enable-flashinfer-autotune` | Avoids first-request autotune stalls on SM120 where FlashInfer AOT cubins already cover this checkpoint's shapes | Long, unpredictable first requests |
 | `--quantization modelopt` + `--trust-remote-code` | NVFP4 via NVIDIA Model Optimizer's quant config (checkpoint ships `hf_quant_config.json`); qwen4_exp modeling code ships with the checkpoint | Refuses to load / wrong kernels |
 
-**MTP speculative decoding: not yet.** `--speculative-config
-'{"method":"mtp",...}'` needs open vLLM PRs #55313 / #55513; the launcher
-keeps an `MTP=1` switch for the day they merge.
+**MTP speculative decoding: not validated on this build.** The pinned
+image (2026-09-05) predates the merged upstream MTP work; #55513 (block
+FP8 MTP fix for ModelOpt checkpoints) merged 2026-09-08, Qwen4Exp-specific
+MTP fixes are still open upstream (e.g. #56742) as of 2026-09-25. (The
+original "needs #55313/#55513" note in earlier revisions was wrong —
+#55313 does not exist.) Revalidate on a bumped image before enabling;
+the launcher keeps the `MTP=1` switch for that day.
 
 ## Measured performance (2026-09-25, fresh prompts — no prefix-cache reuse)
 
@@ -153,8 +162,10 @@ rate = completion tokens / (total − TTFT). Full harness in
 | ~32K | 3.0 s | 10,608 | 80.3 |
 | ~128K | 12.4 s | 10,292 | 79.5 |
 
-**Long code outputs (2,048 tokens ≈ a full module + test suite, chat
-endpoint, thinking disabled, complete graph-library task):**
+**Long code outputs (fixed 2,048-token sustained-generation workload —
+every run ends at `finish_reason: length`, so this measures sustained
+generation speed, not "a complete module + tests" — chat
+endpoint, thinking disabled, graph-library task):**
 
 | Prompt size | TTFT | Prefill tok/s | Decode tok/s |
 |---|---|---|---|
@@ -163,9 +174,12 @@ endpoint, thinking disabled, complete graph-library task):**
 | ~128K | 12.4 s | 10,373 | 78.6 |
 | **~500K** | **55.1 s** | **9,082** | **77.6** |
 
-Long-output **concurrency** (2,048-token generations, ~32K context):
+Long-output **concurrency** — end-to-end output throughput (total generated
+tokens / total wall time, **including prefill/TTFT**, which is why these
+aggregate figures are lower than pure decode rates), 2,048-token
+generations, ~32K context:
 
-| Streams | Aggregate decode | Per-stream decode | Wall time |
+| Streams | Aggregate output (incl. prefill) | Per-stream decode | Wall time |
 |---|---|---|---|
 | 1 | 71.1 | 79.5 | 28.8 s |
 | 2 | 115.0 | 64–69 | 35.6 s |
@@ -176,13 +190,20 @@ Long-output **concurrency** (2,048-token generations, ~32K context):
 stream runs for the full 2,048 tokens — the batch never drains to
 single-stream speedups.)
 
+**Full-context concurrency (the 4-way proof):** four simultaneous
+~515K-token prompts all completed — 2,059,209 prompt tokens held at once,
+97.3% of the KV pool. Behavior at that occupancy: chunked prefill admits
+streams staggered (TTFTs 57–236 s), and near-full-pool decode batches
+serialize — expect minutes, not seconds, per stream. Raw data:
+`benchmarks/bench-fullctx-conc.json`.
+
 Decode speed is essentially flat from 1K to 500K context (≈79–81 tok/s) —
 context length costs prefill time, not generation speed. Prefill holds
 ~10K tok/s to 128K and drops only ~13% at the 500K extreme.
 
 **Concurrency (prose, ~8K context, 256 output tokens each):**
 
-| Streams | Aggregate decode | Per-stream decode | Wall time |
+| Streams | Aggregate output (incl. prefill) | Per-stream decode | Wall time |
 |---|---|---|---|
 | 1 | 80.6 | 80.6 | 5.1 s |
 | 2 | 99.1 | 58–71 | 5.2 s |
@@ -197,7 +218,8 @@ per-stream rate at c=4 is still a comfortable 41–64 tok/s.
 | **HumanEval+ pass@1 (EvalPlus, greedy, thinking off)** | **0.945 base / 0.921+** — 164/164 problems, sandboxed evaluation |
 | Cold start | ~8 min (JIT caches in named Docker volumes make restarts fast) |
 | Long-context recall | YaRN 2.0 needle tests 3/3 correct at 25% / 50% / 90% depth (2026-09-22) |
-| KV pool (GMU 0.94) | 2,118,489 tokens — 4.03 concurrent full-524K requests |
+| KV pool (GMU 0.94) | 2,118,489 tokens — 4 concurrent full-context requests **verified live** (four ~515K prompts, 97.3% occupancy, `bench-fullctx-conc.json`) |
+| Full-window boundary | single request: 523,012-token prompt + 1,024 output — TTFT 55.7 s, 77.4 tok/s (`bench-fullctx-conc.json`) |
 
 Eval configuration: [EvalPlus](https://github.com/evalplus/evalplus) `--backend openai`
 against the live server, temperature 0.0 (`--greedy`),
@@ -262,6 +284,13 @@ benchmarks/bench-run-2026-09-25.log         console log of the main run
 - **Hermes Agent (Nous Research)** — authored this recipe: the flag-by-flag
   forensics, py-spy sessions, the `uva.py`/`gpu_worker.py` patches, the
   benchmarks, and this write-up.
+- **@blackwellboy** — expert review of this repo (2026-09-25), with our
+  sincere thanks. His 12-point feedback materially improved this revision:
+  the digest-pinned image default, the CTX↔RoPE linkage, localhost-default
+  binding, metric naming, claim wording, and the warmup-patch caveat all
+  came from his review — and he independently verified the `gpu_worker.py`
+  patch edit against upstream before we did anything else. Errors that
+  survived his review are ours.
 - **Qwen Team, Alibaba** — Qwen3.8-Flash-Next weights and architecture.
 - **NVIDIA** — the NVFP4 checkpoint and Model Optimizer; the
   Dynamo recipe (B200 lane) as prior art.
