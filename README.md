@@ -194,9 +194,19 @@ per-stream rate at c=4 is still a comfortable 41–64 tok/s.
 
 | Other | Value |
 |---|---|
+| **HumanEval+ pass@1 (EvalPlus, greedy, thinking off)** | **0.945 base / 0.921+** — 164/164 problems, sandboxed evaluation |
 | Cold start | ~8 min (JIT caches in named Docker volumes make restarts fast) |
 | Long-context recall | YaRN 2.0 needle tests 3/3 correct at 25% / 50% / 90% depth (2026-09-22) |
 | KV pool (GMU 0.94) | 2,118,489 tokens — 4.03 concurrent full-524K requests |
+
+Eval configuration: [EvalPlus](https://github.com/evalplus/evalplus) `--backend openai`
+against the live server, temperature 0.0 (`--greedy`),
+`chat_template_kwargs: {"enable_thinking": false}` (EvalPlus's OpenAI
+backend needed a one-line local patch to pass this through — without it
+the model spends the whole sampling budget reasoning and returns empty
+completions; same failure mode as the completions-endpoint bench, see
+`benchmarks/bench-code-long.py`). Raw samples + eval config in
+`benchmarks/evalplus-humaneval/`.
 
 Alternative lane: the GGUF build (Unsloth UD-Q4_K_XL via llama.cpp) hits
 ~92 tok/s single-stream on the same cards — faster solo, but no tensor-
