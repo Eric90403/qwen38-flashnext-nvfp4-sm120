@@ -142,21 +142,22 @@ bind-mounted patch files, and `-e VLLM_SKIP_WARMUP_KERNELS=1`.)
 | `--no-enable-flashinfer-autotune` | Avoids first-request autotune stalls on SM120 where FlashInfer AOT cubins already cover this checkpoint's shapes | Long, unpredictable first requests |
 | `--quantization modelopt` + `--trust-remote-code` | NVFP4 via NVIDIA Model Optimizer's quant config (checkpoint ships `hf_quant_config.json`); qwen4_exp modeling code ships with the checkpoint | Refuses to load / wrong kernels |
 
-**MTP speculative decoding: validated on the native build (2026-09-26).**
+**MTP speculative decoding: re-measured on the native build (2026-09-26,
+3-pass sweep, `benchmarks/runs-native-mtp-2026-09-26.json`).**
 `MTP=1` appends `--speculative-config '{"method":"mtp","num_speculative_tokens":3}'`.
 It boots clean on the pinned Sep-26 nightly: the block-FP8 ModelOpt loading
 fix (#55513, merged 2026-09-08) makes the `Qwen4ExpMTP` architecture resolve
-and load against this checkpoint. Measured single-stream (one pass each):
-decode 133–144 tok/s prose and 176 tok/s code vs 90.9–93.7 with `MTP=0`,
-acceptance 46% of draft tokens (1,857 accepted of 4,023 drafted over 1,341
-drafts, temp 0.7). The cost: the MTP head plus speculator graph capture
-shrink the KV pool 2,112,392 → 1,739,614 tokens, so full-context concurrency
-drops 4.03× → 3.32× — **the four-concurrent-full-length claim needs
-`MTP=0`.** A 512K-token needle stayed correct with MTP on (recall is not
-speculation-dependent, but we checked). Some Qwen4Exp-specific MTP fixes are
-still open upstream (e.g. #56742) as of 2026-09-25. (The old
-"needs #55313/#55513" note in earlier revisions was wrong — #55313 does not
-exist.)
+and load against this checkpoint. Measured single-stream decode (3-pass
+median, temp 0.7): prose 131–134 tok/s (1K/32K/128K/500K), code 133–147
+tok/s, vs 90.9–93.7 with `MTP=0`; a 3-request acceptance probe measured
+draft acceptance 41.8% (668 accepted of 1,599 drafted over 533 drafts).
+The cost: the MTP head plus speculator graph capture shrink the KV pool
+2,112,392 → 1,739,614 tokens, so full-context concurrency drops 4.03× →
+3.32× — **the four-concurrent-full-length claim needs `MTP=0`.** A 512K-token
+needle stayed correct with MTP on (recall is not speculation-dependent, but
+we checked). Some Qwen4Exp-specific MTP fixes are still open upstream (e.g.
+#56742) as of 2026-09-25. (The old "needs #55313/#55513" note in earlier
+revisions was wrong — #55313 does not exist.)
 
 **MTP under multi-stream full-context load (2026-09-26, measured).** Three
 simultaneous ~515K-token requests, 256 output each, identical seeds, MTP=1
@@ -174,7 +175,7 @@ Reading: with short outputs this workload is **prefill-bound**, so MTP buys
 no wall-clock (it costs ~5% — speculator overhead on 256-token segments
 while chunked prefill dominates the batch). MTP's benefit appears the
 moment decode dominates — the tail stream finishing alone decoded at 121
-vs 77 tok/s (+57%), matching the single-stream 133–176 vs 91–94 numbers.
+vs 77 tok/s (+57%), in line with the single-stream 131–150 vs 91–94 band (3-pass sweep).
 Choose by workload: long generations → MTP=1; many short-output
 full-context lookups → MTP=0. Raw data:
 `benchmarks/runs-conc3-mtp-2026-09-26.json`,
@@ -183,23 +184,24 @@ full-context lookups → MTP=0. Raw data:
 ## Measured performance
 
 **Native build — nightly `gddd6fbca1` (2026-09-26, zero patches).** Single
-pass per cell; treat as ±3% of a 3-pass median. Raw files:
+pass per cell (MTP=1 cells: 3-pass median, `runs-native-mtp-2026-09-26.json`); treat as ±3% of a 3-pass median. Raw files:
 `benchmarks/runs-native-ple-2026-09-26.json`,
 `benchmarks/runs-fullctx-native-2026-09-26.json`. Decode at the same
 protocol (prose task, `MTP=0` unless noted):
 
 | Prompt size | TTFT | Prefill tok/s | Decode tok/s | Decode tok/s (MTP=1) |
 |---|---|---|---|---|
-| ~1K | 0.13 s | 8,269 | 93.7 | 133.5 |
+| ~1K | 0.13 s | 8,269 | 93.7 | 131.2 |
 | ~8K | 0.78 s | 10,387 | 93.5 | — |
-| ~32K | 2.64 s | 12,126 | 92.8 | 144.1 |
+| ~32K | 2.64 s | 12,126 | 92.8 | 133.8 |
 | ~128K | 10.8 s | 11,835 | 91.8 | — |
-| **~500K** | **48.7 s** | **10,283** | **90.9** | **133.0** |
+| **~500K** | **48.7 s** | **10,283** | **90.9** | **111.6** |
 
 The native offload path (#54371 + #56926 serialized huge-page host tables)
 decodes ~15% faster than the patched build at every context length, and
-single-stream MTP roughly doubles it again (133–176 tok/s; see the MTP note
-above for the KV-pool cost). Code lane, MTP=0: 93.3 / 92.2 / 91.3–91.5
+single-stream MTP lifts decode ~40–60% over MTP=0 (2026-09-26 3-pass sweep:
+131–150 tok/s; see the MTP note above for the KV-pool cost). Code lane,
+MTP=0: 93.3 / 92.2 / 91.3–91.5
 (1K/32K/128K). Concurrency (MTP=0): c=3 140.3 and c=4 141.5 aggregate —
 in line with the legacy medians (123.9/143.8, `bench-median.json`; the single-run reference measured 125.8/145.6, `bench-results.json`); the c=2 pass measured 79.8 due
 to TTFT serialization in a single pass and is a timing artifact, not a
@@ -390,6 +392,7 @@ benchmarks/runs-prose-{1,2,3}.json          the raw passes behind the medians
 benchmarks/bench-results.json               the original 2026-09-25 single-run reference
 benchmarks/bench-code-long.json             long-output code run (raw)
 benchmarks/bench-fullctx-conc.json          boundary + 4-way proof (raw, legacy build)
+benchmarks/runs-native-mtp-2026-09-26.json  native build MTP=1 single-stream sweep + acceptance probe, raw
 benchmarks/runs-native-ple-2026-09-26.json  native build (zero-patch) full sweep, raw (JSONL)
 benchmarks/runs-fullctx-native-2026-09-26.json  native build boundary + 4-way proof, raw (JSONL)
 benchmarks/bench-natural.json               natural-text lane (raw)
